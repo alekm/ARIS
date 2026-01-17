@@ -9,11 +9,13 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD
+        - redis-cli
+        - ping
       interval: 10s
       timeout: 5s
       retries: 5
-
   audio-capture:
     container_name: aris-audio-capture
     build:
@@ -28,7 +30,7 @@ services:
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - MODE=${MODE:-hackrf}  # mock, kiwi, or hackrf
+      - MODE=${MODE:-hackrf} # mock, kiwi, or hackrf
       - KIWI_HOST=${KIWI_HOST:-}
       - KIWI_PORT=${KIWI_PORT:-8073}
       - KIWI_PASSWORD=${KIWI_PASSWORD:-}
@@ -42,11 +44,10 @@ services:
       - SOAPY_SDR_MODULE_PATH=/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.8:/usr/lib/soapysdr/modules0.8:/usr/local/lib/SoapySDR/modules0.8
     # HackRF USB passthrough enabled
     privileged: true
-    user: root  # Run as root to ensure USB device access
+    user: root # Run as root to ensure USB device access
     devices:
       - /dev/bus/usb:/dev/bus/usb
     restart: unless-stopped
-
   stt:
     container_name: aris-stt
     build:
@@ -60,8 +61,8 @@ services:
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - MODEL_SIZE=${MODEL_SIZE:-medium}  # tiny, base, small, medium, large-v2, large-v3
-      - DEVICE=${DEVICE:-cuda}  # cuda or cpu
+      - MODEL_SIZE=${MODEL_SIZE:-medium} # tiny, base, small, medium, large-v2, large-v3
+      - DEVICE=${DEVICE:-cuda} # cuda or cpu
       - VAD_THRESHOLD=${VAD_THRESHOLD:-0.5}
     deploy:
       resources:
@@ -69,9 +70,9 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities:
+                - gpu
     restart: unless-stopped
-
   callsign-extractor:
     container_name: aris-callsign-extractor
     build:
@@ -84,7 +85,6 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
     restart: unless-stopped
-
   summarizer:
     container_name: aris-summarizer
     build:
@@ -98,12 +98,11 @@ services:
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - LLM_BACKEND=${LLM_BACKEND:-ollama}  # ollama, llama-cpp, or openai-compatible
+      - LLM_BACKEND=${LLM_BACKEND:-ollama} # ollama, llama-cpp, or openai-compatible
       - LLM_MODEL=${LLM_MODEL:-llama3.2:latest}
-      - LLM_HOST=${LLM_HOST:-host.docker.internal:11434}  # Adjust for your LLM server
+      - LLM_HOST=${LLM_HOST:-host.docker.internal:11434} # Adjust for your LLM server
       - LLM_API_KEY=${LLM_API_KEY:-}
     restart: unless-stopped
-
   api:
     container_name: aris-api
     build:
@@ -113,7 +112,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "${API_PORT:-8000}:8000"
+      - ${API_PORT:-8000}:8000
     volumes:
       - ./data/db:/data/db
     environment:
@@ -124,11 +123,15 @@ services:
       - API_HOST=${API_HOST:-0.0.0.0}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/stats"]
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:8000/api/stats
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-
 volumes:
-  redis-data:
+  redis-data: null
+networks: {}

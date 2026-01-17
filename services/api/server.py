@@ -166,8 +166,8 @@ async def root():
             <h2>Receiver Control</h2>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px;">
                 <div>
-                    <label for="frequency" style="display: block; margin-bottom: 5px;">Frequency (Hz):</label>
-                    <input type="number" id="frequency" placeholder="e.g., 7188000" style="width: 100%; padding: 8px; background: #1a1a1a; border: 1px solid #00ff00; color: #00ff00; font-family: 'Courier New', monospace;">
+                    <label for="frequency" style="display: block; margin-bottom: 5px;">Frequency (kHz):</label>
+                    <input type="number" id="frequency" placeholder="e.g., 7188" step="0.001" style="width: 100%; padding: 8px; background: #1a1a1a; border: 1px solid #00ff00; color: #00ff00; font-family: 'Courier New', monospace;">
                     <button onclick="changeFrequency()" style="margin-top: 10px; width: 100%;">Change Frequency</button>
                     <div id="frequency-status" style="margin-top: 5px; font-size: 0.9em;"></div>
                 </div>
@@ -225,23 +225,23 @@ async def root():
 
             async function changeFrequency() {
                 const frequencyInput = document.getElementById('frequency');
-                const frequency = parseInt(frequencyInput.value);
+                const frequency = parseFloat(frequencyInput.value);
                 const statusDiv = document.getElementById('frequency-status');
-                
-                if (!frequency || frequency < 100000 || frequency > 6000000000) {
-                    statusDiv.innerHTML = '<span style="color: #ff0000;">Invalid frequency (100 kHz - 6 GHz)</span>';
+
+                if (!frequency || frequency < 100 || frequency > 6000000) {
+                    statusDiv.innerHTML = '<span style="color: #ff0000;">Invalid frequency (100 kHz - 6000 MHz)</span>';
                     return;
                 }
-                
+
                 statusDiv.innerHTML = '<span style="color: #ffaa00;">Changing frequency...</span>';
-                
+
                 try {
                     const response = await fetch('/api/control/frequency', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
                         },
-                        body: JSON.stringify({ frequency_hz: frequency })
+                        body: JSON.stringify({ frequency_khz: frequency })
                     });
                     
                     const result = await response.json();
@@ -306,9 +306,9 @@ async def root():
                         const mode = stats.recent_audio.mode;
                         const freqMHz = (freq / 1000000).toFixed(3);
                         document.getElementById('current-settings').textContent = `${freqMHz} MHz (${mode})`;
-                        
-                        // Update the frequency input with current value
-                        document.getElementById('frequency').value = freq;
+
+                        // Update the frequency input with current value (in kHz)
+                        document.getElementById('frequency').value = (freq / 1000).toFixed(3);
                         document.getElementById('mode').value = mode;
                     } else {
                         document.getElementById('current-settings').textContent = 'No audio data available';
@@ -490,7 +490,7 @@ async def search_by_callsign(callsign: str):
 
 
 class FrequencyRequest(BaseModel):
-    frequency_hz: int
+    frequency_khz: float
 
 class ModeRequest(BaseModel):
     mode: str
@@ -499,29 +499,33 @@ class ModeRequest(BaseModel):
 async def set_frequency(request: FrequencyRequest):
     """
     Change the receiver frequency
-    
-    - **frequency_hz**: Frequency in Hz (100 kHz to 6 GHz)
+
+    - **frequency_khz**: Frequency in kHz (100 to 6000000)
     """
-    if request.frequency_hz < 100000 or request.frequency_hz > 6000000000:
-        raise HTTPException(status_code=400, detail="Frequency must be between 100 kHz and 6 GHz")
-    
+    if request.frequency_khz < 100 or request.frequency_khz > 6000000:
+        raise HTTPException(status_code=400, detail="Frequency must be between 100 kHz and 6000 MHz")
+
+    # Convert kHz to Hz
+    frequency_hz = int(request.frequency_khz * 1000)
+
     try:
         # Send control command to audio-capture service via Redis
         command = {
             'command': 'set_frequency',
-            'frequency_hz': str(request.frequency_hz),
+            'frequency_hz': str(frequency_hz),
             'timestamp': str(time.time())
         }
-        
+
         # Add to control stream
         redis_client.xadd(STREAM_CONTROL, command, maxlen=100)  # Keep last 100 commands
-        
-        logger.info(f"Frequency change command sent: {request.frequency_hz} Hz")
-        
+
+        logger.info(f"Frequency change command sent: {frequency_hz} Hz ({request.frequency_khz} kHz)")
+
         return {
             "status": "success",
-            "message": f"Frequency change command sent: {request.frequency_hz} Hz",
-            "frequency_hz": request.frequency_hz
+            "message": f"Frequency change command sent: {request.frequency_khz} kHz",
+            "frequency_khz": request.frequency_khz,
+            "frequency_hz": frequency_hz
         }
     except Exception as e:
         logger.error(f"Error sending frequency change command: {e}")

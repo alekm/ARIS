@@ -82,26 +82,169 @@ class MockAudioSource:
 
 
 class KiwiSDRAudioSource:
-    """Real KiwiSDR audio source"""
+    """Real KiwiSDR audio source via WebSocket"""
 
     def __init__(self, config):
         self.host = config['kiwi_host']
         self.port = config.get('kiwi_port', 8073)
-        self.frequency = config['frequency_hz']
-        self.mode = config.get('demod_mode', config.get('mode', 'USB'))
+        self.password = config.get('kiwi_password', None)
+
+        # Read from environment variables first
+        self.frequency = int(os.getenv('FREQUENCY_HZ', config.get('frequency_hz', 7200000)))
+        self.mode = os.getenv('DEMOD_MODE', config.get('demod_mode', config.get('mode', 'USB')))
         self.sample_rate = config.get('sample_rate', 12000)
         self.chunk_duration = config.get('chunk_duration_ms', 1000)
 
+        # Audio buffer
+        self.audio_buffer = []
+        self.buffer_lock = __import__('threading').Lock()
+
         logger.info(f"KiwiSDR source: {self.host}:{self.port}, {self.frequency} Hz, {self.mode}")
 
-        # TODO: Implement actual KiwiSDR connection
-        # Will use kiwirecorder.py or custom WebSocket client
-        raise NotImplementedError("KiwiSDR connection not yet implemented - use MODE=mock")
+        # Start WebSocket connection in background thread
+        self._init_connection()
+
+    def _init_connection(self):
+        """Initialize WebSocket connection to KiwiSDR"""
+        import asyncio
+        import websockets
+        import threading
+        import struct
+        import base64
+
+        self.ws = None
+        self.running = True
+
+        async def connect_and_stream():
+            """Connect to KiwiSDR and stream audio"""
+            try:
+                url = f"ws://{self.host}:{self.port}/kiwi/{int(time.time() * 1000)}/SND"
+                logger.info(f"Connecting to KiwiSDR at {url}")
+
+                async with websockets.connect(url, max_size=None) as ws:
+                    self.ws = ws
+                    logger.info("KiwiSDR WebSocket connected")
+
+                    # Send initial setup commands
+                    # Set authentication if password is provided
+                    if self.password:
+                        await ws.send(f"SET auth t=kiwi p={self.password}")
+
+                    # Set modulation mode
+                    mode_num = {'AM': 0, 'AMN': 1, 'USB': 2, 'LSB': 3, 'CW': 4, 'CWN': 5, 'NBFMorIQ': 6, 'DRM': 7}.get(self.mode.upper(), 2)
+                    await ws.send(f"SET mod={mode_num} low_cut=300 high_cut=3000 freq={self.frequency / 1000.0:.3f}")
+
+                    # Set audio sample rate
+                    await ws.send(f"SET AR OK in={self.sample_rate} out=48000")
+
+                    # Start audio streaming
+                    await ws.send("SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 gain=50")
+                    await ws.send("SET squelch=0 max=0")
+                    await ws.send("SET OVERRIDE port=8073")
+
+                    logger.info("KiwiSDR configured, starting audio stream")
+
+                    # Receive audio data
+                    while self.running:
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+
+                            if isinstance(msg, bytes):
+                                # Audio data comes as binary
+                                # KiwiSDR sends: 'SND' header + flags + sequence + audio samples
+                                if len(msg) > 4 and msg[:3] == b'SND':
+                                    # Extract audio samples (int16 PCM)
+                                    audio_data = msg[4:]  # Skip header
+                                    samples = np.frombuffer(audio_data, dtype=np.int16)
+
+                                    with self.buffer_lock:
+                                        self.audio_buffer.extend(samples)
+
+                        except asyncio.TimeoutError:
+                            # Send keepalive
+                            await ws.send("SET keepalive")
+                        except Exception as e:
+                            logger.error(f"Error receiving KiwiSDR data: {e}")
+                            break
+
+            except Exception as e:
+                logger.error(f"KiwiSDR connection error: {e}", exc_info=True)
+                self.running = False
+
+        def run_async_loop():
+            """Run asyncio loop in thread"""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(connect_and_stream())
+            finally:
+                loop.close()
+
+        # Start WebSocket thread
+        self.ws_thread = threading.Thread(target=run_async_loop, daemon=True)
+        self.ws_thread.start()
+
+        # Wait for connection
+        time.sleep(2)
+
+    def set_frequency(self, frequency_hz):
+        """Change frequency dynamically"""
+        self.frequency = int(frequency_hz)
+        logger.info(f"KiwiSDR frequency changed to {self.frequency} Hz")
+        # Note: Would need to send command via WebSocket
+        # For now, requires reconnection
+        return True
+
+    def set_mode(self, mode):
+        """Change demodulation mode dynamically"""
+        self.mode = mode.upper()
+        logger.info(f"KiwiSDR mode changed to {self.mode}")
+        # Note: Would need to send command via WebSocket
+        # For now, requires reconnection
+        return True
 
     def read_chunk(self):
-        """Return a chunk from KiwiSDR"""
-        # TODO: Read from KiwiSDR WebSocket stream
-        pass
+        """Return a chunk from KiwiSDR audio buffer"""
+        chunk_samples = int(self.sample_rate * self.chunk_duration / 1000)
+
+        # Wait for enough samples
+        max_wait = 5  # seconds
+        wait_start = time.time()
+        while len(self.audio_buffer) < chunk_samples:
+            if time.time() - wait_start > max_wait:
+                logger.warning(f"Timeout waiting for KiwiSDR audio (have {len(self.audio_buffer)}/{chunk_samples} samples)")
+                # Return silent chunk
+                pcm = np.zeros(chunk_samples, dtype=np.int16)
+                return AudioChunk(
+                    timestamp=time.time(),
+                    frequency_hz=self.frequency,
+                    mode=self.mode,
+                    sample_rate=self.sample_rate,
+                    duration_ms=self.chunk_duration,
+                    data=pcm.tobytes()
+                )
+            time.sleep(0.1)
+
+        # Extract chunk from buffer
+        with self.buffer_lock:
+            chunk_data = np.array(self.audio_buffer[:chunk_samples], dtype=np.int16)
+            self.audio_buffer = self.audio_buffer[chunk_samples:]
+
+        return AudioChunk(
+            timestamp=time.time(),
+            frequency_hz=self.frequency,
+            mode=self.mode,
+            sample_rate=self.sample_rate,
+            duration_ms=self.chunk_duration,
+            data=chunk_data.tobytes()
+        )
+
+    def close(self):
+        """Close KiwiSDR connection"""
+        self.running = False
+        if hasattr(self, 'ws_thread'):
+            self.ws_thread.join(timeout=2)
+        logger.info("KiwiSDR closed")
 
 
 # =============================================================================
@@ -146,10 +289,13 @@ def demodulate_lsb(iq_samples, rf_rate, audio_rate):
     """
     Demodulate LSB (Lower Sideband) from IQ samples.
     """
-    # LSB: shift baseband down, then low-pass filter
-    t = np.arange(len(iq_samples)) / rf_rate
-    shift_freq = -1500  # Negative shift for LSB
-    shifted = iq_samples * np.exp(1j * 2 * np.pi * shift_freq * t)
+    # LSB: Conjugate to flip spectrum (negative freqs become positive)
+    # Then shift down to center the voice band
+    iq_conj = np.conj(iq_samples)
+
+    t = np.arange(len(iq_conj)) / rf_rate
+    shift_freq = -1500  # Shift down to center LSB voice
+    shifted = iq_conj * np.exp(1j * 2 * np.pi * shift_freq * t)
 
     # Take real part
     audio = np.real(shifted)
@@ -390,6 +536,13 @@ class HackRFAudioSource:
         """Change demodulation mode dynamically"""
         try:
             self.mode = mode.upper()
+
+            # Deactivate stream before changing mode to avoid artifacts
+            if hasattr(self, 'rx_stream') and self.rx_stream is not None:
+                logger.debug("Deactivating stream for mode change...")
+                self.sdr.deactivateStream(self.rx_stream)
+
+            # Change demodulator
             self.demodulator = {
                 'USB': demodulate_usb,
                 'LSB': demodulate_lsb,
@@ -397,10 +550,23 @@ class HackRFAudioSource:
                 'FM': demodulate_fm,
             }.get(self.mode.upper(), demodulate_usb)
             logger.info(f"Mode changed to {self.mode}")
-            # Mode change doesn't require stream reset, just changes the demodulator function
+
+            # Reactivate stream after mode change
+            if hasattr(self, 'rx_stream') and self.rx_stream is not None:
+                logger.debug("Reactivating stream after mode change...")
+                self.sdr.activateStream(self.rx_stream)
+                # Small delay to let stream stabilize
+                time.sleep(0.1)
+
             return True
         except Exception as e:
             logger.error(f"Failed to change mode to {mode}: {e}", exc_info=True)
+            # Try to reactivate stream even if mode change failed
+            if hasattr(self, 'rx_stream') and self.rx_stream is not None:
+                try:
+                    self.sdr.activateStream(self.rx_stream)
+                except Exception as e2:
+                    logger.error(f"Failed to reactivate stream after mode change error: {e2}")
             return False
 
     def read_chunk(self):

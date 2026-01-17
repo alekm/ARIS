@@ -49,6 +49,15 @@ class STTService:
         # VAD parameters
         self.vad_threshold = float(os.getenv('VAD_THRESHOLD', '0.5'))
 
+        # Energy-based speech detection parameters
+        self.energy_threshold = float(os.getenv('ENERGY_THRESHOLD', '0.01'))  # RMS energy threshold
+        self.silence_duration_ms = int(os.getenv('SILENCE_DURATION_MS', '2000'))  # 2 seconds of silence triggers transcription
+
+        # Speech state tracking
+        self.in_speech = False
+        self.silence_chunks_count = 0
+        self.silence_chunks_needed = 0  # Calculated from silence_duration_ms
+
         # Buffer for accumulating audio
         self.audio_buffer = []
         self.buffer_duration_ms = 0
@@ -73,6 +82,13 @@ class STTService:
         pcm = np.frombuffer(audio_bytes, dtype=np.int16)
         float_audio = pcm.astype(np.float32) / 32768.0
         return float_audio
+
+    def detect_speech(self, audio_float):
+        """Detect if audio chunk contains speech using RMS energy"""
+        rms = np.sqrt(np.mean(audio_float ** 2))
+        has_speech = rms > self.energy_threshold
+        logger.debug(f"Audio RMS: {rms:.4f}, threshold: {self.energy_threshold:.4f}, speech: {has_speech}")
+        return has_speech
 
     def transcribe_buffer(self):
         """Transcribe accumulated audio buffer"""
@@ -132,7 +148,7 @@ class STTService:
         logger.info(f"Published transcript: {text[:50]}...")
 
     def process_chunk(self, chunk_data):
-        """Process a single audio chunk"""
+        """Process a single audio chunk with VAD-triggered transcription"""
         try:
             # Debug: log what we receive
             logger.debug(f"Received chunk_data keys: {list(chunk_data.keys()) if isinstance(chunk_data, dict) else 'not a dict'}")
@@ -140,6 +156,14 @@ class STTService:
 
             # Convert to float32
             audio_float = self.bytes_to_float32(chunk.data, chunk.sample_rate)
+
+            # Calculate silence chunks needed (do this once on first chunk)
+            if self.silence_chunks_needed == 0 and chunk.duration_ms > 0:
+                self.silence_chunks_needed = max(1, self.silence_duration_ms // chunk.duration_ms)
+                logger.info(f"Silence detection: need {self.silence_chunks_needed} consecutive silent chunks ({self.silence_duration_ms}ms)")
+
+            # Detect speech in this chunk
+            has_speech = self.detect_speech(audio_float)
 
             # Add to buffer
             self.audio_buffer.append(audio_float)
@@ -151,8 +175,42 @@ class STTService:
                 'mode': chunk.mode
             }
 
-            # Transcribe if buffer is getting full
+            # State machine for speech detection
+            should_transcribe = False
+            transcribe_reason = ""
+
+            if has_speech:
+                # Speech detected - reset silence counter
+                if not self.in_speech:
+                    logger.info("Speech started")
+                    self.in_speech = True
+                self.silence_chunks_count = 0
+            else:
+                # Silence detected
+                if self.in_speech:
+                    # We were in speech, now in silence
+                    self.silence_chunks_count += 1
+                    logger.debug(f"Silence chunk {self.silence_chunks_count}/{self.silence_chunks_needed}")
+
+                    if self.silence_chunks_count >= self.silence_chunks_needed:
+                        # Enough silence detected - speech has ended
+                        logger.info(f"Speech ended (silence detected for {self.silence_chunks_count * chunk.duration_ms}ms)")
+                        should_transcribe = True
+                        transcribe_reason = "speech_ended"
+                        self.in_speech = False
+                        self.silence_chunks_count = 0
+
+            # Safety fallback: transcribe if buffer is getting full
             if self.buffer_duration_ms >= self.max_buffer_ms:
+                logger.info(f"Buffer full ({self.buffer_duration_ms}ms), forcing transcription")
+                should_transcribe = True
+                transcribe_reason = "buffer_full"
+                self.in_speech = False  # Reset state
+                self.silence_chunks_count = 0
+
+            # Transcribe if triggered
+            if should_transcribe:
+                logger.info(f"Transcribing buffer (reason: {transcribe_reason})")
                 result = self.transcribe_buffer()
                 if result:
                     text, confidence = result
