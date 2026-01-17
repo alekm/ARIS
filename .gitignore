@@ -38,3 +38,4 @@ Thumbs.db
 *.pt
 *.onnx
 data/models/
+CLAUDE.md
