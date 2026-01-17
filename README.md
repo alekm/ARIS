@@ -1,10 +1,10 @@
-# HamEars 📻
+# ARIS 📻
 
 **Amateur Radio Intelligence System** - Real-time monitoring, transcription, and analysis of ham radio communications.
 
 ## Overview
 
-HamEars is a local-first, GPU-accelerated system for continuous monitoring of amateur radio bands. It captures audio from KiwiSDR receivers, performs real-time speech-to-text transcription, extracts callsigns, and generates AI-powered summaries of QSOs and nets.
+ARIS is a local-first, GPU-accelerated system for continuous monitoring of amateur radio bands. It captures audio from KiwiSDR receivers, performs real-time speech-to-text transcription, extracts callsigns, and generates AI-powered summaries of QSOs and nets.
 
 ### Key Features
 
@@ -68,8 +68,8 @@ HamEars is a local-first, GPU-accelerated system for continuous monitoring of am
 
 1. Clone the repository:
 ```bash
-git clone <your-repo>
-cd hamears
+git clone git@github.com:alekm/aris.git
+cd aris
 ```
 
 2. Create environment file:
@@ -147,7 +147,7 @@ LLM_HOST=host.docker.internal:11434
 ### Project Structure
 
 ```
-hamears/
+aris/
 ├── docker-compose.yml
 ├── .env.example
 ├── services/

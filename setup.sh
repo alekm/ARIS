@@ -1,10 +1,10 @@
 #!/bin/bash
-# HamEars Quick Setup Script
+# ARIS Quick Setup Script
 
 set -e
 
-echo "🎯 HamEars Setup"
-echo "================"
+echo "🎯 ARIS Setup"
+echo "============="
 echo ""
 
 # Check for Docker

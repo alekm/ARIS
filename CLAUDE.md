@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## System Overview
 
-HamEars is a GPU-accelerated amateur radio intelligence system that monitors ham radio frequencies via KiwiSDR receivers. It performs real-time speech-to-text transcription, extracts callsigns, and generates AI summaries of QSOs (conversations) and nets.
+ARIS (Amateur Radio Intelligence System) is a GPU-accelerated amateur radio intelligence system that monitors ham radio frequencies via KiwiSDR receivers. It performs real-time speech-to-text transcription, extracts callsigns, and generates AI summaries of QSOs (conversations) and nets.
 
 The system is designed to run locally without cloud dependencies on Ubuntu with NVIDIA GPUs (2x A4000, i9-10980XE, 96GB RAM).
 

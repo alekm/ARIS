@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HamEars API Server
+ARIS API Server
 Provides REST API and web UI for browsing transcripts, callsigns, and QSOs
 """
 import os
@@ -28,8 +28,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="HamEars API",
-    description="Amateur Radio Monitoring and Intelligence System",
+    title="ARIS API",
+    description="Amateur Radio Intelligence System",
     version="0.1.0"
 )
 
@@ -80,7 +80,7 @@ async def root():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>HamEars - Ham Radio Intelligence</title>
+        <title>ARIS - Amateur Radio Intelligence System</title>
         <style>
             body {
                 font-family: 'Courier New', monospace;
@@ -116,7 +116,7 @@ async def root():
         </style>
     </head>
     <body>
-        <h1>📻 HamEars - Ham Radio Intelligence System</h1>
+        <h1>📻 ARIS - Amateur Radio Intelligence System</h1>
 
         <div class="card">
             <h2>System Status</h2>

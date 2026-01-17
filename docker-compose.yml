@@ -77,7 +77,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - DATABASE_URL=sqlite:////data/db/hamears.db
+      - DATABASE_URL=sqlite:////data/db/aris.db
     restart: unless-stopped
 
 volumes:

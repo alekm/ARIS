@@ -1,5 +1,5 @@
 """
-Shared data models for HamEars pipeline
+Shared data models for ARIS (Amateur Radio Intelligence System) pipeline
 """
 from dataclasses import dataclass, asdict
 from datetime import datetime
