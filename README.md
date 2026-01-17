@@ -68,8 +68,8 @@ ARIS is a local-first, GPU-accelerated system for continuous monitoring of amate
 
 1. Clone the repository:
 ```bash
-git clone git@github.com:alekm/aris.git
-cd aris
+git clone git@github.com:alekm/ARIS.git
+cd ARIS
 ```
 
 2. Create environment file:
@@ -147,7 +147,7 @@ LLM_HOST=host.docker.internal:11434
 ### Project Structure
 
 ```
-aris/
+ARIS/
 ├── docker-compose.yml
 ├── .env.example
 ├── services/
