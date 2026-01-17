@@ -31,7 +31,7 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - MODE=${MODE:-hackrf} # mock, kiwi, or hackrf
-      - KIWI_HOST=${KIWI_HOST:-}
+      - KIWI_HOST=${KIWI_HOST:-172.16.250.99}
       - KIWI_PORT=${KIWI_PORT:-8073}
       - KIWI_PASSWORD=${KIWI_PASSWORD:-}
       - FREQUENCY_HZ=${FREQUENCY_HZ:-7188000}

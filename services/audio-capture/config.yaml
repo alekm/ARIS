@@ -4,7 +4,7 @@
 mode: hackrf
 
 # KiwiSDR settings (for mode: kiwi)
-kiwi_host: 192.168.1.100  # Replace with your KiwiSDR IP
+kiwi_host: 172.16.250.99  # KiwiSDR IP address
 kiwi_port: 8073
 kiwi_password: null  # If required
 
