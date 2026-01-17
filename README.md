@@ -1,5 +1,7 @@
 # ARIS 📻
 
+> **Note:** This project is in early development and not yet functional. The KiwiSDR integration is not implemented - only mock audio works currently.
+
 **Amateur Radio Intelligence System** - Real-time monitoring, transcription, and analysis of ham radio communications.
 
 ## Overview
