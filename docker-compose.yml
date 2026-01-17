@@ -20,7 +20,11 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - MODE=mock  # Change to 'kiwi' when KiwiSDR is online
+      - MODE=mock  # mock, kiwi, or hackrf
+    # Uncomment for HackRF USB passthrough:
+    # privileged: true
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb
     restart: unless-stopped
 
   stt:

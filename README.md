@@ -96,11 +96,41 @@ docker compose restart audio-capture
 ### Audio Capture (`services/audio-capture/config.yaml`)
 
 ```yaml
-mode: kiwi  # or mock
+# Mode: mock, kiwi, or hackrf
+mode: mock
+
+# KiwiSDR settings
 kiwi_host: 192.168.1.100
 frequency_hz: 7200000  # 40m band
-mode: USB
+demod_mode: USB  # USB, LSB, AM, FM
 sample_rate: 16000
+
+# HackRF settings (for mode: hackrf)
+rf_sample_rate: 2000000  # 2 MS/s
+lna_gain: 16  # 0-40 dB
+vga_gain: 20  # 0-62 dB
+```
+
+### With HackRF
+
+1. Update `docker-compose.yml` to enable USB passthrough:
+```yaml
+audio-capture:
+  privileged: true
+  devices:
+    - /dev/bus/usb:/dev/bus/usb
+```
+
+2. Set mode in `.env` or `config.yaml`:
+```bash
+MODE=hackrf
+```
+
+3. Configure gain and frequency in `services/audio-capture/config.yaml`
+
+4. Restart:
+```bash
+docker compose up -d --build audio-capture
 ```
 
 ### STT Settings (`.env`)
@@ -145,7 +175,7 @@ ARIS/
 ├── docker-compose.yml
 ├── .env.example
 ├── services/
-│   ├── audio-capture/      # KiwiSDR audio ingestion
+│   ├── audio-capture/      # KiwiSDR/HackRF audio ingestion
 │   ├── stt/                # Speech-to-text
 │   ├── callsign-extractor/ # Callsign NLP
 │   ├── summarizer/         # LLM summaries
@@ -190,9 +220,11 @@ docker compose logs -f stt
 - [x] STT pipeline
 - [x] Callsign extraction
 - [x] Basic API
+- [x] HackRF support with local IQ demodulation
 
-### Phase 2: KiwiSDR Integration (In Progress)
+### Phase 2: SDR Integration (In Progress)
 - [ ] WebSocket client for KiwiSDR
+- [x] HackRF USB SDR support (USB/LSB/AM/FM demodulation)
 - [ ] Multi-frequency monitoring
 - [ ] Band-specific audio profiles
 
@@ -221,6 +253,10 @@ docker compose logs -f stt
 - 96GB RAM
 - 2x NVIDIA A4000 (16GB each)
 - 500GB NVMe SSD
+
+### SDR Options
+- **KiwiSDR** - Remote WebSDR receiver (audio stream)
+- **HackRF One/Pro** - Local USB SDR with IQ demodulation (1 MHz - 6 GHz)
 
 ## License
 

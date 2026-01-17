@@ -1,6 +1,6 @@
 # Audio Capture Configuration
 
-# Mode: 'mock' or 'kiwi'
+# Mode: 'mock', 'kiwi', or 'hackrf'
 mode: mock
 
 # KiwiSDR settings (for mode: kiwi)
@@ -8,9 +8,16 @@ kiwi_host: 192.168.1.100  # Replace with your KiwiSDR IP
 kiwi_port: 8073
 kiwi_password: null  # If required
 
-# Frequency and mode
+# HackRF settings (for mode: hackrf)
+hackrf_serial: null  # Device serial number (optional, for multiple devices)
+rf_sample_rate: 2000000  # RF sample rate in Hz (2 MS/s default)
+lna_gain: 16  # LNA gain in dB (0-40, 8 dB steps)
+vga_gain: 20  # VGA gain in dB (0-62, 2 dB steps)
+bandwidth: 1750000  # RF bandwidth filter in Hz
+
+# Frequency and demodulation mode
 frequency_hz: 7200000  # 7.2 MHz (40m band)
-mode: USB  # USB, LSB, FM, AM, CW
+demod_mode: USB  # USB, LSB, FM, AM
 
 # Audio settings
 sample_rate: 16000  # Hz - 16kHz is good for voice/Whisper

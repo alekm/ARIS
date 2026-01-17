@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## System Overview
 
-ARIS (Amateur Radio Intelligence System) is a GPU-accelerated amateur radio intelligence system that monitors ham radio frequencies via KiwiSDR receivers. It performs real-time speech-to-text transcription, extracts callsigns, and generates AI summaries of QSOs (conversations) and nets.
+ARIS (Amateur Radio Intelligence System) is a GPU-accelerated amateur radio intelligence system that monitors ham radio frequencies via KiwiSDR receivers or HackRF USB SDR. It performs real-time speech-to-text transcription, extracts callsigns, and generates AI summaries of QSOs (conversations) and nets.
 
 The system is designed to run locally without cloud dependencies on Ubuntu with NVIDIA GPUs (2x A4000, i9-10980XE, 96GB RAM).
 
@@ -15,7 +15,8 @@ The system is designed to run locally without cloud dependencies on Ubuntu with 
 Data flows through 5 microservices via Redis streams:
 
 1. **audio-capture** → `STREAM_AUDIO` ("audio:chunks")
-   - Captures from KiwiSDR or mock audio source
+   - Captures from KiwiSDR, HackRF, or mock audio source
+   - HackRF mode includes IQ demodulation (USB/LSB/AM/FM) via SoapySDR
    - Publishes `AudioChunk` dataclass (PCM int16 bytes + metadata)
 
 2. **stt** → `STREAM_TRANSCRIPTS` ("transcripts")
@@ -184,14 +185,15 @@ nvidia-smi -l 1  # Monitor GPU while stt service runs
 - Complete Docker microservices architecture
 - Redis stream-based message bus
 - Mock audio source with test tones
+- HackRF USB SDR with IQ demodulation (USB/LSB/AM/FM)
 - STT pipeline with faster-whisper + GPU
 - Callsign extraction (regex + phonetics)
-- LLM summarization via Ollama
+- LLM summarization via Ollama or OpenAI-compatible API
 - FastAPI REST API + web UI
 - Makefile shortcuts
 
 ### 🚧 In Progress
-- KiwiSDR WebSocket client (placeholder exists at `services/audio-capture/capture.py:75-95`)
+- KiwiSDR WebSocket client (placeholder exists at `services/audio-capture/capture.py:84-104`)
 
 ### 📋 Planned (Roadmap in README.md)
 - Multi-frequency monitoring
@@ -203,11 +205,13 @@ nvidia-smi -l 1  # Monitor GPU while stt service runs
 ## Hardware & Dependencies
 
 - **GPU Required:** STT service needs NVIDIA GPU with CUDA support (set `DEVICE=cpu` for CPU fallback)
-- **Ollama:** Must be running on host machine at `LLM_HOST` for summarization
+- **Ollama:** Must be running on host machine at `LLM_HOST` for summarization (or use OpenAI-compatible API)
   - Install: `curl -fsSL https://ollama.ai/install.sh | sh`
   - Pull model: `ollama pull llama3.2`
 - **nvidia-docker:** Required for GPU pass-through to containers
-- **KiwiSDR:** Solar-powered remote SDR (optional, use mock mode for testing)
+- **SDR Options (choose one):**
+  - **KiwiSDR:** Remote WebSDR receiver (not yet implemented)
+  - **HackRF One/Pro:** Local USB SDR with IQ demodulation (requires USB passthrough in Docker)
 
 ## Audio Processing Details
 
@@ -216,6 +220,15 @@ nvidia-smi -l 1  # Monitor GPU while stt service runs
 - **VAD:** Built into faster-whisper, filters non-speech segments
 - **Buffering:** STT accumulates 1-30 seconds before transcribing (configurable)
 - **Session Gaps:** Summarizer groups transcripts when gap > 30 seconds
+
+### HackRF Demodulation
+
+When using HackRF mode, IQ samples are processed locally:
+- **RF Sample Rate:** 2 MS/s default (configurable)
+- **Demodulation:** USB/LSB (Weaver method), AM (envelope detection), FM (phase discriminator)
+- **Decimation:** Multi-stage FIR filtering from RF rate to 16kHz audio
+- **Gain Control:** LNA (0-40 dB) and VGA (0-62 dB) configurable via `config.yaml`
+- **Implementation:** `services/audio-capture/capture.py` - `HackRFAudioSource` class and `demodulate_*` functions
 
 ## Callsign Detection
 
