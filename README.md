@@ -18,32 +18,28 @@ ARIS is a local-first, GPU-accelerated system for continuous monitoring of amate
 
 ## Architecture
 
-```
-┌─────────────┐
-│  KiwiSDR    │  (Solar-powered remote SDR)
-└──────┬──────┘
-       │ Audio Stream
-       ▼
-┌─────────────────────────────────────────┐
-│         Processing Host (Ubuntu)        │
-│   i9-10980XE + 96GB RAM + 2x A4000      │
-├─────────────────────────────────────────┤
-│  ┌──────────────┐    ┌──────────────┐  │
-│  │ Audio        │──▶│ STT          │  │
-│  │ Capture      │    │ (Whisper)    │  │
-│  └──────────────┘    └──────┬───────┘  │
-│                             │           │
-│  ┌──────────────┐    ┌──────▼───────┐  │
-│  │ Callsign     │◀──│ Redis        │  │
-│  │ Extractor    │    │ Streams      │  │
-│  └──────┬───────┘    └──────┬───────┘  │
-│         │                   │          │
-│         ▼                   ▼          │
-│  ┌──────────────┐    ┌──────────────┐  │
-│  │ Summarizer   │    │ API/Web UI   │  │
-│  │ (LLM)        │    │              │  │
-│  └──────────────┘    └──────────────┘  │
-└────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph SDR["KiwiSDR (Solar-powered remote SDR)"]
+        kiwi[Audio Stream]
+    end
+
+    subgraph Host["Processing Host (Ubuntu) - i9-10980XE + 96GB RAM + 2x A4000"]
+        capture[Audio Capture]
+        stt[STT / Whisper]
+        redis[(Redis Streams)]
+        callsign[Callsign Extractor]
+        summarizer[Summarizer / LLM]
+        api[API / Web UI]
+    end
+
+    kiwi --> capture
+    capture --> redis
+    redis --> stt
+    stt --> redis
+    redis --> callsign
+    redis --> summarizer
+    redis --> api
 ```
 
 ## Services
