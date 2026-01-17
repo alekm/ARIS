@@ -16,6 +16,12 @@ class AudioChunk:
     sample_rate: int
     duration_ms: int
     data: bytes  # PCM audio data
+    s_meter: float = 0.0  # S-meter reading (0.0 to 9.9)
+    signal_strength_db: float = -150.0  # Signal strength in dB
+    squelch_open: bool = True  # Whether squelch threshold was met
+    rssi: Optional[float] = None  # RSSI from KiwiSDR if available
+    low_cut: Optional[int] = None  # Filter low cutoff in Hz
+    high_cut: Optional[int] = None  # Filter high cutoff in Hz
 
     def to_dict(self):
         d = asdict(self)
@@ -33,6 +39,13 @@ class AudioChunk:
         d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
         d['sample_rate'] = int(d['sample_rate']) if isinstance(d['sample_rate'], str) else d['sample_rate']
         d['duration_ms'] = int(d['duration_ms']) if isinstance(d['duration_ms'], str) else d['duration_ms']
+        # Optional fields with defaults
+        d['s_meter'] = float(d.get('s_meter', 0.0)) if isinstance(d.get('s_meter'), str) else d.get('s_meter', 0.0)
+        d['signal_strength_db'] = float(d.get('signal_strength_db', -150.0)) if isinstance(d.get('signal_strength_db'), str) else d.get('signal_strength_db', -150.0)
+        d['squelch_open'] = d.get('squelch_open', True) if not isinstance(d.get('squelch_open'), str) else d.get('squelch_open', 'true').lower() == 'true'
+        d['rssi'] = float(d['rssi']) if d.get('rssi') is not None and isinstance(d['rssi'], str) else d.get('rssi')
+        d['low_cut'] = int(d['low_cut']) if d.get('low_cut') is not None and isinstance(d.get('low_cut'), str) else d.get('low_cut')
+        d['high_cut'] = int(d['high_cut']) if d.get('high_cut') is not None and isinstance(d.get('high_cut'), str) else d.get('high_cut')
         return cls(**d)
 
 

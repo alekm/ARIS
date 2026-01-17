@@ -64,12 +64,14 @@ services:
       - MODEL_SIZE=${MODEL_SIZE:-medium} # tiny, base, small, medium, large-v2, large-v3
       - DEVICE=${DEVICE:-cuda} # cuda or cpu
       - VAD_THRESHOLD=${VAD_THRESHOLD:-0.5}
+      - ENERGY_THRESHOLD=${ENERGY_THRESHOLD:-0.01}
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids:
+                - "1"
               capabilities:
                 - gpu
     restart: unless-stopped

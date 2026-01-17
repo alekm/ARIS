@@ -8,16 +8,20 @@ import sys
 import time
 import logging
 from typing import List, Optional
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, Query
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import redis
 from pydantic import BaseModel
 import io
 import numpy as np
 import wave
 import struct
+import re
+from collections import defaultdict
 
 sys.path.insert(0, '/app')
 from shared.models import (
@@ -37,6 +41,61 @@ app = FastAPI(
     description="Amateur Radio Intelligence System",
     version="0.1.0"
 )
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API Key authentication (optional)
+API_KEY = os.getenv('API_KEY', '')
+security = HTTPBearer(auto_error=False)
+
+# Rate limiting
+rate_limit_store = defaultdict(list)
+RATE_LIMIT_REQUESTS = int(os.getenv('RATE_LIMIT_REQUESTS', 10))
+RATE_LIMIT_WINDOW = int(os.getenv('RATE_LIMIT_WINDOW', 60))  # seconds
+
+def check_rate_limit(request: Request):
+    """Simple rate limiting by IP address"""
+    if not API_KEY:  # Only enforce if API key is set
+        return True
+    
+    client_ip = request.client.host if request.client else "unknown"
+    now = datetime.now()
+    
+    # Clean old entries
+    rate_limit_store[client_ip] = [
+        ts for ts in rate_limit_store[client_ip]
+        if (now - ts).total_seconds() < RATE_LIMIT_WINDOW
+    ]
+    
+    # Check limit
+    if len(rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW} seconds"
+        )
+    
+    rate_limit_store[client_ip].append(now)
+    return True
+
+def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify API key if configured"""
+    if not API_KEY:
+        return True  # No API key required
+    
+    if not credentials:
+        raise HTTPException(status_code=401, detail="API key required")
+    
+    if credentials.credentials != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    return True
 
 # Connect to Redis
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -351,7 +410,10 @@ async def get_stats():
                         "frequency_hz": chunk.frequency_hz,
                         "mode": chunk.mode,
                         "sample_rate": chunk.sample_rate,
-                        "duration_ms": chunk.duration_ms
+                        "duration_ms": chunk.duration_ms,
+                        "s_meter": getattr(chunk, 's_meter', 0.0),
+                        "signal_strength_db": getattr(chunk, 'signal_strength_db', -150.0),
+                        "squelch_open": getattr(chunk, 'squelch_open', True)
                     }
             except Exception as e:
                 logger.warning(f"Could not decode recent audio chunk: {e}")
@@ -495,18 +557,48 @@ class FrequencyRequest(BaseModel):
 class ModeRequest(BaseModel):
     mode: str
 
-@app.post("/api/control/frequency")
-async def set_frequency(request: FrequencyRequest):
+class FilterRequest(BaseModel):
+    low_cut: Optional[int] = None
+    high_cut: Optional[int] = None
+
+class AGCRequest(BaseModel):
+    agc_mode: Optional[int] = None  # 0=manual, 1=auto
+    manual_gain: Optional[int] = None
+    threshold: Optional[int] = None
+    slope: Optional[int] = None
+    decay: Optional[int] = None
+
+class NoiseBlankerRequest(BaseModel):
+    enabled: bool
+
+def validate_frequency(frequency_khz: float) -> int:
+    """Validate frequency is within KiwiSDR limits (0-30 MHz)"""
+    if frequency_khz < 0 or frequency_khz > 30000:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Frequency must be between 0 and 30000 kHz for KiwiSDR, got {frequency_khz} kHz"
+        )
+    return int(frequency_khz * 1000)
+
+def validate_mode(mode: str) -> str:
+    """Validate and sanitize mode"""
+    valid_modes = ['USB', 'LSB', 'AM', 'FM', 'CW']
+    mode_upper = str(mode).upper()
+    if mode_upper not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Mode must be one of {valid_modes}, got {mode}"
+        )
+    return mode_upper
+
+@app.post("/api/control/frequency", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def set_frequency(request: FrequencyRequest, req: Request = None):
     """
     Change the receiver frequency
 
-    - **frequency_khz**: Frequency in kHz (100 to 6000000)
+    - **frequency_khz**: Frequency in kHz (0 to 30000 for KiwiSDR)
     """
-    if request.frequency_khz < 100 or request.frequency_khz > 6000000:
-        raise HTTPException(status_code=400, detail="Frequency must be between 100 kHz and 6000 MHz")
-
-    # Convert kHz to Hz
-    frequency_hz = int(request.frequency_khz * 1000)
+    frequency_hz = validate_frequency(request.frequency_khz)
 
     try:
         # Send control command to audio-capture service via Redis
@@ -532,36 +624,167 @@ async def set_frequency(request: FrequencyRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/control/mode")
-async def set_mode(request: ModeRequest):
+@app.post("/api/control/mode", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def set_mode(request: ModeRequest, req: Request = None):
     """
     Change the demodulation mode
     
-    - **mode**: Demodulation mode (USB, LSB, AM, FM)
+    - **mode**: Demodulation mode (USB, LSB, AM, FM, CW)
     """
-    if request.mode.upper() not in ['USB', 'LSB', 'AM', 'FM']:
-        raise HTTPException(status_code=400, detail="Mode must be USB, LSB, AM, or FM")
+    mode = validate_mode(request.mode)
     
     try:
         # Send control command to audio-capture service via Redis
         command = {
             'command': 'set_mode',
-            'mode': request.mode.upper(),
+            'mode': mode,
             'timestamp': str(time.time())
         }
         
         # Add to control stream
         redis_client.xadd(STREAM_CONTROL, command, maxlen=100)  # Keep last 100 commands
         
-        logger.info(f"Mode change command sent: {request.mode}")
+        logger.info(f"Mode change command sent: {mode}")
         
         return {
             "status": "success",
-            "message": f"Mode change command sent: {request.mode}",
-            "mode": request.mode.upper()
+            "message": f"Mode change command sent: {mode}",
+            "mode": mode
         }
     except Exception as e:
         logger.error(f"Error sending mode change command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/control/filter", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def set_filter(request: FilterRequest, req: Request = None):
+    """
+    Change filter bandwidth
+    
+    - **low_cut**: Low cutoff frequency in Hz (optional)
+    - **high_cut**: High cutoff frequency in Hz (optional)
+    """
+    if request.low_cut is not None and (request.low_cut < 0 or request.low_cut > 20000):
+        raise HTTPException(status_code=400, detail="low_cut must be between 0 and 20000 Hz")
+    if request.high_cut is not None and (request.high_cut < 0 or request.high_cut > 20000):
+        raise HTTPException(status_code=400, detail="high_cut must be between 0 and 20000 Hz")
+    if request.low_cut is not None and request.high_cut is not None and request.low_cut >= request.high_cut:
+        raise HTTPException(status_code=400, detail="low_cut must be less than high_cut")
+    
+    try:
+        command = {
+            'command': 'set_filter',
+            'timestamp': str(time.time())
+        }
+        if request.low_cut is not None:
+            command['low_cut'] = str(request.low_cut)
+        if request.high_cut is not None:
+            command['high_cut'] = str(request.high_cut)
+        
+        redis_client.xadd(STREAM_CONTROL, command, maxlen=100)
+        logger.info(f"Filter change command sent: low_cut={request.low_cut}, high_cut={request.high_cut}")
+        
+        return {
+            "status": "success",
+            "message": "Filter change command sent",
+            "low_cut": request.low_cut,
+            "high_cut": request.high_cut
+        }
+    except Exception as e:
+        logger.error(f"Error sending filter change command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/control/agc", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def set_agc(request: AGCRequest, req: Request = None):
+    """
+    Change AGC settings
+    
+    - **agc_mode**: 0=manual, 1=auto (optional)
+    - **manual_gain**: Manual gain value (optional)
+    - **threshold**: AGC threshold (optional)
+    - **slope**: AGC slope (optional)
+    - **decay**: AGC decay (optional)
+    """
+    try:
+        command = {
+            'command': 'set_agc',
+            'timestamp': str(time.time())
+        }
+        if request.agc_mode is not None:
+            command['agc_mode'] = str(request.agc_mode)
+        if request.manual_gain is not None:
+            command['manual_gain'] = str(request.manual_gain)
+        if request.threshold is not None:
+            command['threshold'] = str(request.threshold)
+        if request.slope is not None:
+            command['slope'] = str(request.slope)
+        if request.decay is not None:
+            command['decay'] = str(request.decay)
+        
+        redis_client.xadd(STREAM_CONTROL, command, maxlen=100)
+        logger.info(f"AGC change command sent")
+        
+        return {
+            "status": "success",
+            "message": "AGC change command sent"
+        }
+    except Exception as e:
+        logger.error(f"Error sending AGC change command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/control/noise-blanker", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def set_noise_blanker(request: NoiseBlankerRequest, req: Request = None):
+    """
+    Enable/disable noise blanker
+    
+    - **enabled**: True to enable, False to disable
+    """
+    try:
+        command = {
+            'command': 'set_noise_blanker',
+            'enabled': 'true' if request.enabled else 'false',
+            'timestamp': str(time.time())
+        }
+        
+        redis_client.xadd(STREAM_CONTROL, command, maxlen=100)
+        logger.info(f"Noise blanker change command sent: {request.enabled}")
+        
+        return {
+            "status": "success",
+            "message": f"Noise blanker {'enabled' if request.enabled else 'disabled'}",
+            "enabled": request.enabled
+        }
+    except Exception as e:
+        logger.error(f"Error sending noise blanker command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/kiwi/status")
+async def get_kiwi_status():
+    """Get KiwiSDR connection status and metrics"""
+    # This would need to be implemented in audio-capture service
+    # For now, return basic info
+    return {
+        "status": "unknown",
+        "message": "KiwiSDR status endpoint - requires implementation in audio-capture service"
+    }
+
+@app.get("/api/kiwi/config")
+async def get_kiwi_config():
+    """Get current KiwiSDR configuration"""
+    # Read from recent audio chunk
+    try:
+        messages = redis_client.xrevrange(STREAM_AUDIO, count=1)
+        if messages:
+            msg_id, msg_data = messages[0]
+            chunk = RedisMessage.decode(msg_data, AudioChunk)
+            return {
+                "frequency_hz": chunk.frequency_hz,
+                "mode": chunk.mode,
+                "low_cut": chunk.low_cut,
+                "high_cut": chunk.high_cut
+            }
+        return {"message": "No audio chunks available"}
+    except Exception as e:
+        logger.error(f"Error getting KiwiSDR config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -584,21 +807,22 @@ async def get_audio_chunk(chunk_id: str):
         
         # Convert bytes to numpy array
         audio_data = np.frombuffer(chunk.data, dtype=np.int16)
-        
-        # Convert to float32 for WAV (normalize to -1.0 to 1.0)
-        audio_float = audio_data.astype(np.float32) / 32768.0
-        
+
+        # Reduce volume for comfortable playback (50% of original)
+        PLAYBACK_VOLUME = 0.5
+        audio_data = (audio_data * PLAYBACK_VOLUME).astype(np.int16)
+
         # Create WAV file in memory
         import wave
         import struct
-        
+
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, 'wb') as wav_file:
             wav_file.setnchannels(1)  # Mono
             wav_file.setsampwidth(2)  # 16-bit
             wav_file.setframerate(chunk.sample_rate)
             wav_file.setcomptype('NONE', 'not compressed')
-            
+
             # Write audio data
             for sample in audio_data:
                 wav_file.writeframes(struct.pack('<h', int(sample)))
@@ -632,18 +856,22 @@ async def get_latest_audio():
         
         # Convert bytes to numpy array
         audio_data = np.frombuffer(chunk.data, dtype=np.int16)
-        
+
+        # Reduce volume for comfortable playback (50% of original)
+        PLAYBACK_VOLUME = 0.5
+        audio_data = (audio_data * PLAYBACK_VOLUME).astype(np.int16)
+
         # Create WAV file in memory
         import wave
         import struct
-        
+
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, 'wb') as wav_file:
             wav_file.setnchannels(1)  # Mono
             wav_file.setsampwidth(2)  # 16-bit
             wav_file.setframerate(chunk.sample_rate)
             wav_file.setcomptype('NONE', 'not compressed')
-            
+
             # Write audio data
             for sample in audio_data:
                 wav_file.writeframes(struct.pack('<h', int(sample)))

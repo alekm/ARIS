@@ -77,7 +77,10 @@ class MockAudioSource:
             mode=self.mode,
             sample_rate=self.sample_rate,
             duration_ms=self.chunk_duration,
-            data=audio_data
+            data=audio_data,
+            s_meter=0.0,
+            signal_strength_db=-150.0,
+            squelch_open=True
         )
 
 
@@ -94,6 +97,8 @@ class KiwiSDRAudioSource:
         import struct
         import threading
         import queue
+        import re
+        import socket
 
         # Store imports for later use
         self._asyncio = asyncio
@@ -101,34 +106,130 @@ class KiwiSDRAudioSource:
         self._struct = struct
         self._threading = threading
         self._queue = queue
+        self._re = re
+        self._socket = socket
 
         # Read from environment variables first, then fall back to config file
-        self.host = os.getenv('KIWI_HOST', config.get('kiwi_host', ''))
-        self.port = int(os.getenv('KIWI_PORT', config.get('kiwi_port', 8073)))
-        self.password = os.getenv('KIWI_PASSWORD', config.get('kiwi_password', ''))
-        self.frequency = int(os.getenv('FREQUENCY_HZ', config.get('frequency_hz', 7200000)))
-        self.mode = os.getenv('DEMOD_MODE', config.get('demod_mode', config.get('mode', 'USB')))
+        host_raw = os.getenv('KIWI_HOST', config.get('kiwi_host', ''))
+        port_raw = os.getenv('KIWI_PORT', config.get('kiwi_port', 8073))
+        password_raw = os.getenv('KIWI_PASSWORD', config.get('kiwi_password', ''))
+        frequency_raw = os.getenv('FREQUENCY_HZ', config.get('frequency_hz', 7200000))
+        mode_raw = os.getenv('DEMOD_MODE', config.get('demod_mode', config.get('mode', 'USB')))
+        
+        # Validate and sanitize inputs
+        self.host = self._validate_host(host_raw)
+        self.port = self._validate_port(port_raw)
+        self.password = self._sanitize_password(password_raw)
+        self.frequency = self._validate_frequency(frequency_raw)
+        self.mode = self._validate_mode(mode_raw)
+        
         self.sample_rate = config.get('sample_rate', 12000)  # KiwiSDR native is 12kHz
         self.chunk_duration = config.get('chunk_duration_ms', 1000)
         self.target_sample_rate = 16000  # Target for Whisper
-
+        
+        # Feature flags
+        self.use_wss = os.getenv('KIWI_USE_WSS', 'false').lower() == 'true'
+        self.debug_kiwi = os.getenv('DEBUG_KIWI', 'false').lower() == 'true'
+        self.squelch_threshold = float(os.getenv('SQUELCH_THRESHOLD', config.get('squelch_threshold', 0.0)))
+        self.noise_blanker = os.getenv('NOISE_BLANKER', config.get('noise_blanker', 'false')).lower() == 'true'
+        
+        # Connection metrics
+        self.reconnect_count = 0
+        self.max_reconnect_attempts = int(os.getenv('KIWI_MAX_RECONNECT', 0))  # 0 = unlimited
+        self.reconnect_base_delay = 5.0
+        self.reconnect_max_delay = 60.0
+        self.reconnect_jitter = 0.1
+        
         # Audio buffer
         self.audio_queue = queue.Queue(maxsize=100)
         self.audio_buffer = b''
         self.samples_per_chunk = int(self.target_sample_rate * self.chunk_duration / 1000)
 
-        # Connection state
+        # Connection state (protected by _state_lock)
         self.connected = False
         self.ws = None
         self.ws_thread = None
+        self.loop = None  # Store event loop reference
         self.running = True
-        self.reconnect_delay = 5  # seconds
+        self.reconnect_delay = self.reconnect_base_delay
         self.last_audio_time = time.time()
+        self.last_error = None
+        self.packet_loss_count = 0
+        self.last_sequence = None
+        
+        # Thread synchronization lock for shared state
+        self._state_lock = self._threading.Lock()
 
         logger.info(f"KiwiSDR source: {self.host}:{self.port}, {self.frequency} Hz, {self.mode}")
 
+        if self.debug_kiwi:
+            logger.setLevel(logging.DEBUG)
+            logger.debug("KiwiSDR debug logging enabled")
+
         if not self.host:
             raise ValueError("KIWI_HOST not configured")
+    
+    def _validate_host(self, host):
+        """Validate host is IP address or hostname (prevent SSRF)"""
+        if not host:
+            raise ValueError("Host cannot be empty")
+        
+        # Check if it's an IP address
+        try:
+            self._socket.inet_aton(host)
+            return host
+        except self._socket.error:
+            pass
+        
+        # Check if it's a valid hostname (alphanumeric, dots, hyphens)
+        if self._re.match(r'^[a-zA-Z0-9.-]+$', host):
+            return host
+        
+        raise ValueError(f"Invalid host format: {host}")
+    
+    def _validate_port(self, port):
+        """Validate port is in valid range"""
+        try:
+            port_int = int(port)
+            if 1 <= port_int <= 65535:
+                return port_int
+            raise ValueError(f"Port must be between 1 and 65535, got {port_int}")
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid port: {port}")
+    
+    def _sanitize_password(self, password):
+        """Sanitize password (remove dangerous characters)"""
+        if not password:
+            return ""
+        # Remove any characters that could be used for command injection
+        # Allow alphanumeric and common safe characters
+        sanitized = self._re.sub(r'[^a-zA-Z0-9_\-=]', '', password)
+        return sanitized
+    
+    def _validate_frequency(self, frequency):
+        """Validate frequency is within KiwiSDR limits (0-30 MHz)"""
+        try:
+            freq_int = int(frequency)
+            # KiwiSDR typically supports 0-30 MHz, but allow up to 65 MHz for some models
+            if 0 <= freq_int <= 65000000:
+                return freq_int
+            raise ValueError(f"Frequency must be between 0 and 65 MHz, got {freq_int} Hz")
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid frequency: {frequency}")
+    
+    def _validate_mode(self, mode):
+        """Validate and sanitize mode (whitelist)"""
+        valid_modes = ['USB', 'LSB', 'AM', 'FM', 'CW']
+        mode_upper = str(mode).upper()
+        if mode_upper in valid_modes:
+            return mode_upper
+        raise ValueError(f"Mode must be one of {valid_modes}, got {mode}")
+    
+    def _sanitize_set_command(self, value):
+        """Sanitize value for SET command (prevent command injection)"""
+        # Remove any characters that could break SET command syntax
+        sanitized = str(value).replace(' ', '').replace(';', '').replace('\n', '').replace('\r', '')
+        return sanitized
 
         # Start WebSocket connection in background thread
         self._start_ws_thread()
@@ -137,37 +238,114 @@ class KiwiSDRAudioSource:
         """Start the WebSocket connection thread"""
         self.ws_thread = self._threading.Thread(target=self._ws_loop, daemon=True)
         self.ws_thread.start()
+    
+    def _get_state(self):
+        """Thread-safe getter for connection state"""
+        with self._state_lock:
+            return {
+                'ws': self.ws,
+                'connected': self.connected,
+                'loop': self.loop
+            }
+    
+    def _set_state(self, ws=None, connected=None, loop=None):
+        """Thread-safe setter for connection state"""
+        with self._state_lock:
+            if ws is not None:
+                self.ws = ws
+            if connected is not None:
+                self.connected = connected
+            if loop is not None:
+                self.loop = loop
 
     def _ws_loop(self):
-        """Main WebSocket loop with reconnection handling"""
-        while self.running:
-            try:
-                logger.info(f"Connecting to KiwiSDR at {self.host}:{self.port}...")
-                self._asyncio.run(self._connect_and_receive())
-            except Exception as e:
-                logger.error(f"KiwiSDR connection error: {e}")
+        """Main WebSocket loop with reconnection handling and exponential backoff"""
+        import random
+        
+        # Create persistent event loop for this thread
+        loop = self._asyncio.new_event_loop()
+        self._asyncio.set_event_loop(loop)
+        
+        try:
+            while self.running:
+                # Check max reconnect attempts
+                if self.max_reconnect_attempts > 0 and self.reconnect_count >= self.max_reconnect_attempts:
+                    logger.error(f"Max reconnection attempts ({self.max_reconnect_attempts}) reached. Stopping.")
+                    self.running = False
+                    break
+                
+                try:
+                    logger.info(f"Connecting to KiwiSDR at {self.host}:{self.port}... (attempt {self.reconnect_count + 1})")
+                    # Store loop reference before connection
+                    self._set_state(loop=loop)
+                    # Run connection in persistent loop
+                    loop.run_until_complete(self._connect_and_receive())
+                    # Reset reconnect delay on successful connection
+                    self.reconnect_delay = self.reconnect_base_delay
+                    self.reconnect_count = 0
+                except Exception as e:
+                    logger.error(f"KiwiSDR connection error: {e}")
+                    # Clear loop reference on error
+                    self._set_state(loop=None, connected=False, ws=None)
+                    self.reconnect_count += 1
 
-            if self.running:
-                logger.info(f"Reconnecting in {self.reconnect_delay} seconds...")
-                time.sleep(self.reconnect_delay)
+                if self.running:
+                    # Exponential backoff with jitter
+                    delay = min(self.reconnect_delay, self.reconnect_max_delay)
+                    jitter = random.uniform(-self.reconnect_jitter * delay, self.reconnect_jitter * delay)
+                    actual_delay = max(0.1, delay + jitter)
+                    
+                    logger.info(f"Reconnecting in {actual_delay:.1f} seconds... (delay: {delay:.1f}s, jitter: {jitter:.2f}s)")
+                    time.sleep(actual_delay)
+                    
+                    # Increase delay for next attempt (exponential backoff)
+                    self.reconnect_delay *= 2
+        finally:
+            # Clean up event loop
+            try:
+                pending = self._asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(self._asyncio.gather(*pending, return_exceptions=True))
+                loop.close()
+            except Exception as e:
+                logger.error(f"Error closing event loop: {e}")
+            self._set_state(loop=None)
 
     async def _connect_and_receive(self):
         """Connect to KiwiSDR and receive audio data"""
         import random
 
+        # Get current event loop (already set in _ws_loop)
+        loop = self._asyncio.get_event_loop()
+        # Store loop reference atomically with connection attempt
+        self._set_state(loop=loop)
+
         # KiwiSDR WebSocket URL format
         client_id = random.randint(0, 999999)
-        url = f"ws://{self.host}:{self.port}/kiwi/{client_id}/SND"
+        protocol = "wss" if self.use_wss else "ws"
+        url = f"{protocol}://{self.host}:{self.port}/kiwi/{client_id}/SND"
+        
+        # Mask password in logs
+        url_log = url.replace(self.password, "***") if self.password else url
 
         try:
-            async with self._websockets.connect(url, ping_interval=None, max_size=None) as ws:
-                self.ws = ws
-                logger.info(f"Connected to KiwiSDR: {url}")
+            # Enable ping/pong keepalive (20 second interval, 10 second timeout)
+            async with self._websockets.connect(
+                url, 
+                ping_interval=20, 
+                ping_timeout=10,
+                max_size=None,
+                close_timeout=5
+            ) as ws:
+                # Store WebSocket reference atomically
+                self._set_state(ws=ws, connected=True)
+                self.last_error = None
+                logger.info(f"Connected to KiwiSDR: {url_log}")
 
                 # Send initial setup commands
                 await self._send_setup_commands(ws)
-
-                self.connected = True
 
                 # Receive audio data
                 async for message in ws:
@@ -181,37 +359,68 @@ class KiwiSDRAudioSource:
                         self._process_text_message(message)
 
         except self._websockets.exceptions.ConnectionClosed as e:
+            self.last_error = f"Connection closed: {e}"
             logger.warning(f"KiwiSDR connection closed: {e}")
+        except self._websockets.exceptions.InvalidStatusCode as e:
+            self.last_error = f"Invalid status code: {e}"
+            logger.error(f"KiwiSDR connection failed (invalid status): {e}")
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"KiwiSDR WebSocket error: {e}")
         finally:
-            self.connected = False
-            self.ws = None
+            # Clear connection state atomically
+            self._set_state(connected=False, ws=None)
+            # Note: Keep loop reference until thread exits
 
     async def _send_setup_commands(self, ws):
         """Send KiwiSDR setup commands"""
         # Authentication (if required)
         if self.password:
-            await ws.send(f"SET auth t=kiwi p={self.password}")
+            # Sanitize password before sending
+            pwd_safe = self._sanitize_set_command(self.password)
+            cmd = f"SET auth t=kiwi p={pwd_safe}"
+            await ws.send(cmd)
+            if self.debug_kiwi:
+                logger.debug(f"Sent: SET auth t=kiwi p=***")
         else:
             await ws.send("SET auth t=kiwi p=")
+            if self.debug_kiwi:
+                logger.debug("Sent: SET auth t=kiwi p=")
 
         # Set audio parameters
         # KiwiSDR sample rates: 12000, 20250 for IQ mode
         await ws.send(f"SET AR OK in=12000 out=12000")
+        if self.debug_kiwi:
+            logger.debug("Sent: SET AR OK in=12000 out=12000")
 
         # Set frequency (in kHz for KiwiSDR)
         freq_khz = self.frequency / 1000.0
-        await ws.send(f"SET mod={self.mode.lower()} low_cut=300 high_cut=2700 freq={freq_khz:.3f}")
+        freq_safe = self._sanitize_set_command(f"{freq_khz:.3f}")
+        mode_safe = self._sanitize_set_command(self.mode.lower())
+        await ws.send(f"SET mod={mode_safe} low_cut=300 high_cut=2700 freq={freq_safe}")
+        if self.debug_kiwi:
+            logger.debug(f"Sent: SET mod={mode_safe} low_cut=300 high_cut=2700 freq={freq_safe}")
 
-        # Set AGC
-        await ws.send("SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50")
+        # Set AGC with very low manual gain to reduce output level
+        await ws.send("SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=1")
+        if self.debug_kiwi:
+            logger.debug("Sent: SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=1")
+
+        # Enable noise blanker if configured
+        if self.noise_blanker:
+            await ws.send("SET nb=1")
+            if self.debug_kiwi:
+                logger.debug("Sent: SET nb=1")
 
         # Enable audio compression (0=none, 1=ADPCM)
         await ws.send("SET compression=0")
+        if self.debug_kiwi:
+            logger.debug("Sent: SET compression=0")
 
         # Start audio stream
         await ws.send("SET gen=0 mix=-1")
+        if self.debug_kiwi:
+            logger.debug("Sent: SET gen=0 mix=-1")
 
         logger.info(f"KiwiSDR setup complete: {freq_khz:.3f} kHz, {self.mode}")
 
@@ -227,8 +436,29 @@ class KiwiSDRAudioSource:
 
         # Check for SND header
         if data[0:3] == b'SND':
-            # Extract audio data (skip header bytes)
+            # Extract header fields
             # Header: SND(3) + flags(1) + seq(4) + rssi(2) = 10 bytes
+            flags = data[3]
+            sequence = self._struct.unpack('<I', data[4:8])[0]  # Little-endian uint32
+            rssi_raw = self._struct.unpack('<H', data[8:10])[0]  # Little-endian uint16
+            
+            # Track packet loss
+            if self.last_sequence is not None:
+                expected_seq = (self.last_sequence + 1) % (2**32)
+                if sequence != expected_seq:
+                    lost = (sequence - expected_seq) % (2**32)
+                    if lost > 1:
+                        self.packet_loss_count += lost - 1
+                        if self.debug_kiwi:
+                            logger.debug(f"Packet loss detected: expected {expected_seq}, got {sequence}, lost {lost-1} packets")
+            self.last_sequence = sequence
+            
+            # Extract RSSI (KiwiSDR RSSI is in dBm, typically -150 to 0)
+            # Convert to S-meter reading (S1 = -121 dBm, S9 = -73 dBm, S9+20 = -53 dBm)
+            rssi_db = -(rssi_raw & 0x7FFF)  # Mask sign bit, negate
+            self.last_rssi = rssi_db
+            
+            # Extract audio data
             audio_data = data[10:]
 
             if len(audio_data) > 0:
@@ -247,47 +477,212 @@ class KiwiSDRAudioSource:
 
     def _process_text_message(self, message):
         """Process text message from KiwiSDR"""
-        logger.debug(f"KiwiSDR message: {message[:100] if len(message) > 100 else message}")
+        if self.debug_kiwi:
+            logger.debug(f"KiwiSDR message: {message[:100] if len(message) > 100 else message}")
 
         # Handle specific messages
-        if "too_busy" in message.lower():
+        msg_lower = message.lower()
+        if "too_busy" in msg_lower:
+            self.last_error = "KiwiSDR is too busy"
             logger.warning("KiwiSDR is too busy, will retry...")
-        elif "badp" in message.lower():
+            # Trigger reconnection with backoff
+            self._set_state(connected=False, ws=None)
+        elif "badp" in msg_lower:
+            self.last_error = "KiwiSDR password rejected"
             logger.error("KiwiSDR password rejected")
+            # Don't retry on auth failure
+            self.running = False
+        elif "error" in msg_lower or "fail" in msg_lower:
+            self.last_error = message
+            logger.warning(f"KiwiSDR error message: {message}")
 
     def set_frequency(self, frequency_hz):
-        """Change frequency dynamically"""
+        """Change frequency dynamically with retry logic"""
         self.frequency = int(frequency_hz)
-        if self.ws and self.connected:
+        
+        # Retry logic with exponential backoff
+        max_retries = 3
+        retry_delay = 0.1
+        
+        for attempt in range(max_retries):
+            # Get current state safely
+            state = self._get_state()
+            ws = state['ws']
+            connected = state['connected']
+            loop = state['loop']
+            
+            if not connected or not ws or not loop:
+                if attempt < max_retries - 1:
+                    logger.debug(f"KiwiSDR not ready, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    logger.warning(f"KiwiSDR not connected after {max_retries} attempts (ws={ws is not None}, connected={connected}, loop={loop is not None})")
+                    return False
+            
+            # Validate loop is still running
+            if not loop.is_running():
+                logger.warning("Event loop is not running, cannot change frequency")
+                self._set_state(connected=False, ws=None, loop=None)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                return False
+            
             try:
                 freq_khz = self.frequency / 1000.0
+                # Sanitize values before sending
+                freq_safe = self._sanitize_set_command(f"{freq_khz:.3f}")
+                mode_safe = self._sanitize_set_command(self.mode.lower())
+                
+                # Verify WebSocket is still open (atomic check)
+                with self._state_lock:
+                    if ws.closed:
+                        logger.warning("WebSocket is closed, cannot change frequency")
+                        self._set_state(connected=False, ws=None)
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        return False
+                    # Get fresh reference while holding lock
+                    current_ws = self.ws
+                    current_loop = self.loop
+                
+                if not current_ws or not current_loop:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    return False
+                
                 # Send via the running event loop
+                cmd = f"SET mod={mode_safe} low_cut=300 high_cut=2700 freq={freq_safe}"
                 self._asyncio.run_coroutine_threadsafe(
-                    self.ws.send(f"SET mod={self.mode.lower()} low_cut=300 high_cut=2700 freq={freq_khz:.3f}"),
-                    self._asyncio.get_event_loop()
+                    current_ws.send(cmd),
+                    current_loop
                 )
+                if self.debug_kiwi:
+                    logger.debug(f"Sent: {cmd}")
                 logger.info(f"KiwiSDR frequency changed to {freq_khz:.3f} kHz")
                 return True
+            except RuntimeError as e:
+                # Loop is closed or invalid
+                error_msg = str(e)
+                if "is closed" in error_msg or "no current event loop" in error_msg.lower():
+                    logger.error(f"Event loop error when changing frequency: {e}")
+                    self._set_state(connected=False, ws=None, loop=None)
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                else:
+                    logger.error(f"Runtime error when changing frequency: {e}")
+                    return False
             except Exception as e:
-                logger.error(f"Failed to change KiwiSDR frequency: {e}")
+                logger.error(f"Failed to change KiwiSDR frequency: {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
                 return False
+        
         return False
 
     def set_mode(self, mode):
-        """Change demodulation mode dynamically"""
+        """Change demodulation mode dynamically with retry logic"""
         self.mode = mode.upper()
-        if self.ws and self.connected:
+        
+        # Retry logic with exponential backoff
+        max_retries = 3
+        retry_delay = 0.1
+        
+        for attempt in range(max_retries):
+            # Get current state safely
+            state = self._get_state()
+            ws = state['ws']
+            connected = state['connected']
+            loop = state['loop']
+            
+            if not connected or not ws or not loop:
+                if attempt < max_retries - 1:
+                    logger.debug(f"KiwiSDR not ready, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    logger.warning(f"KiwiSDR not connected after {max_retries} attempts (ws={ws is not None}, connected={connected}, loop={loop is not None})")
+                    return False
+            
+            # Validate loop is still running
+            if not loop.is_running():
+                logger.warning("Event loop is not running, cannot change mode")
+                self._set_state(connected=False, ws=None, loop=None)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                return False
+            
             try:
                 freq_khz = self.frequency / 1000.0
+                # Sanitize values before sending
+                freq_safe = self._sanitize_set_command(f"{freq_khz:.3f}")
+                mode_safe = self._sanitize_set_command(self.mode.lower())
+                
+                # Verify WebSocket is still open (atomic check)
+                with self._state_lock:
+                    if ws.closed:
+                        logger.warning("WebSocket is closed, cannot change mode")
+                        self._set_state(connected=False, ws=None)
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        return False
+                    # Get fresh reference while holding lock
+                    current_ws = self.ws
+                    current_loop = self.loop
+                
+                if not current_ws or not current_loop:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    return False
+                
+                cmd = f"SET mod={mode_safe} low_cut=300 high_cut=2700 freq={freq_safe}"
                 self._asyncio.run_coroutine_threadsafe(
-                    self.ws.send(f"SET mod={self.mode.lower()} low_cut=300 high_cut=2700 freq={freq_khz:.3f}"),
-                    self._asyncio.get_event_loop()
+                    current_ws.send(cmd),
+                    current_loop
                 )
+                if self.debug_kiwi:
+                    logger.debug(f"Sent: {cmd}")
                 logger.info(f"KiwiSDR mode changed to {self.mode}")
                 return True
+            except RuntimeError as e:
+                # Loop is closed or invalid
+                error_msg = str(e)
+                if "is closed" in error_msg or "no current event loop" in error_msg.lower():
+                    logger.error(f"Event loop error when changing mode: {e}")
+                    self._set_state(connected=False, ws=None, loop=None)
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                else:
+                    logger.error(f"Runtime error when changing mode: {e}")
+                    return False
             except Exception as e:
-                logger.error(f"Failed to change KiwiSDR mode: {e}")
+                logger.error(f"Failed to change KiwiSDR mode: {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
                 return False
+        
         return False
 
     def read_chunk(self):
@@ -304,7 +699,9 @@ class KiwiSDRAudioSource:
                 data = self.audio_queue.get(timeout=0.1)
                 collected += data
             except self._queue.Empty:
-                if not self.connected:
+                # Check connection state safely
+                state = self._get_state()
+                if not state['connected']:
                     # Not connected - return silence
                     break
 
@@ -319,14 +716,56 @@ class KiwiSDRAudioSource:
                 target_len = int(len(audio_12k) * self.target_sample_rate / self.sample_rate)
                 indices = np.linspace(0, len(audio_12k) - 1, target_len)
                 audio_16k = np.interp(indices, np.arange(len(audio_12k)), audio_12k.astype(np.float32))
-                audio_16k = audio_16k.astype(np.int16)
+
+                # Reduce volume to prevent audio overload (20% of original)
+                VOLUME_REDUCTION = 0.2
+                audio_16k = (audio_16k * VOLUME_REDUCTION).astype(np.int16)
             else:
                 audio_16k = np.zeros(self.samples_per_chunk, dtype=np.int16)
         else:
             # No audio - return silence
             audio_16k = np.zeros(self.samples_per_chunk, dtype=np.int16)
-            if not self.connected:
+            state = self._get_state()
+            if not state['connected']:
                 logger.warning("KiwiSDR not connected, returning silence")
+
+        # Calculate signal strength for squelch
+        signal_strength_db = None
+        s_meter = 0.0
+        squelch_open = True
+        
+        if len(audio_16k) > 0:
+            # Calculate RMS power
+            rms = np.sqrt(np.mean(audio_16k.astype(np.float32) ** 2))
+            # Convert to dB (relative to full scale)
+            signal_strength_db = 20 * np.log10(rms / 32767.0 + 1e-10)
+            
+            # Use RSSI from KiwiSDR if available, otherwise use calculated
+            if hasattr(self, 'last_rssi') and self.last_rssi is not None:
+                signal_strength_db = self.last_rssi
+            
+            # Calculate S-meter from RSSI (S1 = -121 dBm, S9 = -73 dBm, S9+20 = -53 dBm)
+            if signal_strength_db >= -53:
+                s_meter = 9.9  # S9+20 or higher
+            elif signal_strength_db >= -73:
+                s_meter = 9.0 + (signal_strength_db + 73) / 2.0  # S9 to S9+20
+            elif signal_strength_db >= -121:
+                s_meter = 1.0 + (signal_strength_db + 121) / 6.0  # S1 to S9
+            else:
+                s_meter = max(0.0, 1.0 + (signal_strength_db + 130) / 9.0)  # Below S1
+            
+            s_meter = min(9.9, max(0.0, s_meter))
+            
+            # Check squelch threshold
+            if self.squelch_threshold > 0:
+                squelch_open = s_meter >= self.squelch_threshold
+                if not squelch_open:
+                    # Return silence if squelch is closed
+                    audio_16k = np.zeros(self.samples_per_chunk, dtype=np.int16)
+        else:
+            signal_strength_db = -150.0
+            s_meter = 0.0
+            squelch_open = False
 
         return AudioChunk(
             timestamp=time.time(),
@@ -334,20 +773,42 @@ class KiwiSDRAudioSource:
             mode=self.mode,
             sample_rate=self.target_sample_rate,
             duration_ms=self.chunk_duration,
-            data=audio_16k.tobytes()
+            data=audio_16k.tobytes(),
+            s_meter=s_meter,
+            signal_strength_db=signal_strength_db if signal_strength_db is not None else -150.0,
+            squelch_open=squelch_open,
+            rssi=getattr(self, 'last_rssi', None),
+            low_cut=getattr(self, 'low_cut', 300),
+            high_cut=getattr(self, 'high_cut', 2700)
         )
 
     def close(self):
         """Clean up KiwiSDR connection"""
         self.running = False
-        if self.ws:
+        
+        # Get current state safely
+        state = self._get_state()
+        ws = state['ws']
+        loop = state['loop']
+        
+        if ws and loop:
             try:
-                self._asyncio.run_coroutine_threadsafe(
-                    self.ws.close(),
-                    self._asyncio.get_event_loop()
-                )
-            except:
-                pass
+                # Check if loop is still running
+                if loop.is_running():
+                    # Schedule close in the event loop
+                    self._asyncio.run_coroutine_threadsafe(
+                        ws.close(),
+                        loop
+                    )
+                else:
+                    # Loop is closed, just log
+                    logger.debug("Event loop already closed, skipping WebSocket close")
+            except RuntimeError as e:
+                # Loop is closed or invalid
+                logger.debug(f"Could not close WebSocket (loop invalid): {e}")
+            except Exception as e:
+                logger.warning(f"Error closing WebSocket: {e}")
+        
         logger.info("KiwiSDR closed")
 
 
@@ -673,9 +1134,9 @@ class HackRFAudioSource:
             def do_read():
                 try:
                     read_result[0] = self.sdr.readStream(
-                        self.rx_stream,
-                        [iq_buffer[samples_read:]],
-                        remaining,
+                self.rx_stream,
+                [iq_buffer[samples_read:]],
+                remaining,
                         timeoutUs=1000000  # 1 second in microseconds
                     )
                 except Exception as e:
@@ -727,7 +1188,10 @@ class HackRFAudioSource:
                     mode=self.mode,
                     sample_rate=self.audio_rate,
                     duration_ms=self.chunk_duration,
-                    data=pcm.tobytes()
+                    data=pcm.tobytes(),
+                    s_meter=0.0,
+                    signal_strength_db=-150.0,
+                    squelch_open=True
                 )
 
         # Demodulate to audio
@@ -744,7 +1208,10 @@ class HackRFAudioSource:
             mode=self.mode,
             sample_rate=self.audio_rate,
             duration_ms=self.chunk_duration,
-            data=pcm.tobytes()
+            data=pcm.tobytes(),
+            s_meter=0.0,
+            signal_strength_db=-150.0,
+            squelch_open=True
         )
 
     def close(self):
@@ -842,12 +1309,12 @@ class AudioCaptureService:
             def do_read():
                 try:
                     messages_result[0] = self.redis.xreadgroup(
-                        self.control_group,
-                        self.control_consumer,
-                        {STREAM_CONTROL: '>'},  # Read new messages
-                        count=10,
-                        block=0  # Non-blocking
-                    )
+                self.control_group,
+                self.control_consumer,
+                {STREAM_CONTROL: '>'},  # Read new messages
+                count=10,
+                block=0  # Non-blocking
+            )
                 except Exception as e:
                     read_exception[0] = e
             
@@ -891,35 +1358,61 @@ class AudioCaptureService:
     def _process_control_message(self, msg_id, msg_data):
         """Process a single control message and acknowledge it"""
         try:
-            # Decode command
-            command = {}
-            for k, v in msg_data.items():
-                key = k.decode('utf-8') if isinstance(k, bytes) else k
-                val = v.decode('utf-8') if isinstance(v, bytes) else v
-                command[key] = val
-            
-            # Handle frequency change
-            if command.get('command') == 'set_frequency':
-                frequency = int(command.get('frequency_hz', 0))
-                if frequency > 0:
-                    if hasattr(self.source, 'set_frequency'):
-                        success = self.source.set_frequency(frequency)
-                        logger.info(f"Control command: set_frequency to {frequency} Hz - {'success' if success else 'failed'}")
-                    else:
-                        logger.warning(f"Source does not support set_frequency")
-            
-            # Handle mode change
-            elif command.get('command') == 'set_mode':
-                mode = command.get('mode', '')
-                if mode:
-                    if hasattr(self.source, 'set_mode'):
-                        success = self.source.set_mode(mode)
-                        logger.info(f"Control command: set_mode to {mode} - {'success' if success else 'failed'}")
-                    else:
-                        logger.warning(f"Source does not support set_mode")
-            
-            # Acknowledge message
-            self.redis.xack(STREAM_CONTROL, self.control_group, msg_id)
+                    # Decode command
+                    command = {}
+                    for k, v in msg_data.items():
+                        key = k.decode('utf-8') if isinstance(k, bytes) else k
+                        val = v.decode('utf-8') if isinstance(v, bytes) else v
+                        command[key] = val
+                    
+                    # Handle frequency change
+                    if command.get('command') == 'set_frequency':
+                        frequency = int(command.get('frequency_hz', 0))
+                        if frequency > 0:
+                            if hasattr(self.source, 'set_frequency'):
+                                success = self.source.set_frequency(frequency)
+                                logger.info(f"Control command: set_frequency to {frequency} Hz - {'success' if success else 'failed'}")
+                            else:
+                                logger.warning(f"Source does not support set_frequency")
+                    
+                    # Handle mode change
+                    elif command.get('command') == 'set_mode':
+                        mode = command.get('mode', '')
+                        if mode:
+                            if hasattr(self.source, 'set_mode'):
+                                success = self.source.set_mode(mode)
+                                logger.info(f"Control command: set_mode to {mode} - {'success' if success else 'failed'}")
+                            else:
+                                logger.warning(f"Source does not support set_mode")
+                    elif command.get('command') == 'set_filter':
+                        low_cut = command.get('low_cut')
+                        high_cut = command.get('high_cut')
+                        if hasattr(self.source, 'set_filter'):
+                            success = self.source.set_filter(low_cut, high_cut)
+                            logger.info(f"Control command: set_filter low_cut={low_cut} high_cut={high_cut} - {'success' if success else 'failed'}")
+                        else:
+                            logger.warning(f"Source does not support set_filter")
+                    elif command.get('command') == 'set_agc':
+                        agc_mode = command.get('agc_mode')
+                        manual_gain = command.get('manual_gain')
+                        threshold = command.get('threshold')
+                        slope = command.get('slope')
+                        decay = command.get('decay')
+                        if hasattr(self.source, 'set_agc'):
+                            success = self.source.set_agc(agc_mode, manual_gain, threshold, slope, decay)
+                            logger.info(f"Control command: set_agc - {'success' if success else 'failed'}")
+                        else:
+                            logger.warning(f"Source does not support set_agc")
+                    elif command.get('command') == 'set_noise_blanker':
+                        enabled = command.get('enabled', 'false').lower() == 'true'
+                        if hasattr(self.source, 'set_noise_blanker'):
+                            success = self.source.set_noise_blanker(enabled)
+                            logger.info(f"Control command: set_noise_blanker enabled={enabled} - {'success' if success else 'failed'}")
+                        else:
+                            logger.warning(f"Source does not support set_noise_blanker")
+                    
+                    # Acknowledge message
+                    self.redis.xack(STREAM_CONTROL, self.control_group, msg_id)
             logger.debug(f"Acknowledged message {msg_id}")
             
         except Exception as e:
@@ -969,18 +1462,18 @@ class AudioCaptureService:
                     logger.info("About to call read_chunk()...")
                     import sys
                     sys.stdout.flush()
-                    chunk = self.source.read_chunk()
+                chunk = self.source.read_chunk()
                     logger.info("read_chunk() completed, publishing...")
-                    self.publish_chunk(chunk)
+                self.publish_chunk(chunk)
 
-                    chunk_count += 1
-                    if chunk_count % 10 == 0:
-                        elapsed = time.time() - start_time
-                        rate = chunk_count / elapsed
-                        logger.info(f"Captured {chunk_count} chunks ({rate:.1f}/sec)")
+                chunk_count += 1
+                if chunk_count % 10 == 0:
+                    elapsed = time.time() - start_time
+                    rate = chunk_count / elapsed
+                    logger.info(f"Captured {chunk_count} chunks ({rate:.1f}/sec)")
 
-                    # Sleep to maintain real-time rate
-                    time.sleep(chunk.duration_ms / 1000 * 0.9)  # Slight underrun
+                # Sleep to maintain real-time rate
+                time.sleep(chunk.duration_ms / 1000 * 0.9)  # Slight underrun
                 except Exception as e:
                     logger.error(f"Error in capture loop: {e}", exc_info=True)
                     time.sleep(1)  # Wait before retrying
