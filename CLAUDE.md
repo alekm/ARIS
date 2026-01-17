@@ -119,13 +119,21 @@ The system can run entirely with mock audio:
 
 ### Adding KiwiSDR Support
 
+The main task is implementing the KiwiSDR WebSocket client:
+
 1. Implement `KiwiSDRAudioSource.read_chunk()` in `services/audio-capture/capture.py:92`
    - Connect to KiwiSDR WebSocket (port 8073)
+   - Demodulate audio or use KiwiSDR's built-in demodulation
+   - Convert to 16kHz mono PCM int16 format
    - Return `AudioChunk` with real audio bytes
 
 2. Set `MODE=kiwi` in `.env`
 
 3. Configure `services/audio-capture/config.yaml` with KiwiSDR IP/frequency
+
+**Reference implementations:**
+- kiwirecorder.py from KiwiSDR project
+- kiwiclient Python library
 
 ### Service Communication Pattern
 
@@ -191,11 +199,14 @@ nvidia-smi -l 1  # Monitor GPU while stt service runs
 - DX spot detection
 - Net detection and tracking
 
-## Hardware Notes
+## Hardware & Dependencies
 
 - **GPU Required:** STT service needs NVIDIA GPU with CUDA support (set `DEVICE=cpu` for CPU fallback)
 - **Ollama:** Must be running on host machine at `LLM_HOST` for summarization
+  - Install: `curl -fsSL https://ollama.ai/install.sh | sh`
+  - Pull model: `ollama pull llama3.2`
 - **nvidia-docker:** Required for GPU pass-through to containers
+- **KiwiSDR:** Solar-powered remote SDR (optional, use mock mode for testing)
 
 ## Audio Processing Details
 
