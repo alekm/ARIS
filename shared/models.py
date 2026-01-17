@@ -52,6 +52,11 @@ class Transcript:
 
     @classmethod
     def from_dict(cls, d):
+        # Convert numeric fields from strings to proper types
+        d['timestamp'] = float(d['timestamp']) if isinstance(d['timestamp'], str) else d['timestamp']
+        d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
+        d['confidence'] = float(d['confidence']) if isinstance(d['confidence'], str) else d['confidence']
+        d['duration_ms'] = int(d['duration_ms']) if isinstance(d['duration_ms'], str) else d['duration_ms']
         return cls(**d)
 
 
@@ -69,6 +74,10 @@ class Callsign:
 
     @classmethod
     def from_dict(cls, d):
+        # Convert numeric fields from strings to proper types
+        d['timestamp'] = float(d['timestamp']) if isinstance(d['timestamp'], str) else d['timestamp']
+        d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
+        d['confidence'] = float(d['confidence']) if isinstance(d['confidence'], str) else d['confidence']
         return cls(**d)
 
 
@@ -89,6 +98,16 @@ class QSO:
 
     @classmethod
     def from_dict(cls, d):
+        # Convert numeric fields from strings to proper types
+        d['start_time'] = float(d['start_time']) if isinstance(d['start_time'], str) else d['start_time']
+        if d.get('end_time') is not None:
+            d['end_time'] = float(d['end_time']) if isinstance(d['end_time'], str) else d['end_time']
+        d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
+        # Convert transcript_ids if they're strings
+        if 'transcript_ids' in d and d['transcript_ids']:
+            if isinstance(d['transcript_ids'], list) and len(d['transcript_ids']) > 0:
+                if isinstance(d['transcript_ids'][0], str):
+                    d['transcript_ids'] = [int(x) for x in d['transcript_ids']]
         return cls(**d)
 
 
@@ -159,3 +178,4 @@ STREAM_AUDIO = "audio:chunks"
 STREAM_TRANSCRIPTS = "transcripts"
 STREAM_CALLSIGNS = "callsigns"
 STREAM_QSOS = "qsos"
+STREAM_CONTROL = "control:audio-capture"  # Control commands for audio capture service

@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y \
     libhackrf0 \
     libsoapysdr0.8 \
     python3-soapysdr \
+    # USB utilities for debugging
+    usbutils \
     && rm -rf /var/lib/apt/lists/*
 
 # Create symlinks for python

@@ -2,6 +2,64 @@
 
 This document tracks all changes made to prepare ARIS for deployment with HackRF support.
 
+## 2026-01-17 - Added Dynamic Frequency Control API
+
+### Feature
+Added API endpoints to dynamically change receiver frequency and demodulation mode without restarting the audio-capture service.
+
+### Implementation
+- **Control Stream**: Added `STREAM_CONTROL` to `shared/models.py` for Redis-based command communication
+- **HackRF Methods**: Added `set_frequency()` and `set_mode()` methods to `HackRFAudioSource` class for dynamic changes
+- **Command Handler**: Added `check_control_commands()` method to `AudioCaptureService` that listens for control commands via Redis consumer groups
+- **API Endpoints**:
+  - `POST /api/control/frequency?frequency_hz=<hz>` - Change frequency (100 kHz to 6 GHz)
+  - `POST /api/control/mode?mode=<USB|LSB|AM|FM>` - Change demodulation mode
+
+### Files Changed
+- `shared/models.py`: Added `STREAM_CONTROL` constant
+- `services/audio-capture/capture.py`: 
+  - Added `set_frequency()` and `set_mode()` methods to `HackRFAudioSource`
+  - Added `check_control_commands()` method to `AudioCaptureService`
+  - Modified `run()` loop to check for control commands every second
+- `services/api/server.py`: Added frequency and mode control endpoints
+
+### Usage
+```bash
+# Change frequency to 14.313 MHz (20m band)
+curl -X POST "http://localhost:8000/api/control/frequency?frequency_hz=14313000"
+
+# Change mode to USB
+curl -X POST "http://localhost:8000/api/control/mode?mode=USB"
+```
+
+### Impact
+- Users can now change frequency and mode via API without restarting services
+- Real-time frequency changes supported
+- Commands are queued via Redis streams for reliable delivery
+
+---
+
+## 2026-01-17 - Fixed API Transcripts Endpoint Type Conversion
+
+### Issue
+The `/api/transcripts` endpoint was returning an error: `'str' object cannot be interpreted as an integer`. This was caused by numeric fields (timestamp, frequency_hz, confidence, duration_ms) being decoded from Redis as strings instead of their proper numeric types.
+
+### Fix
+Updated the `from_dict()` methods in `shared/models.py` for all data models to convert string values to proper numeric types:
+- **Transcript**: Added type conversion for `timestamp` (float), `frequency_hz` (int), `confidence` (float), and `duration_ms` (int)
+- **Callsign**: Added type conversion for `timestamp` (float), `frequency_hz` (int), and `confidence` (float)
+- **QSO**: Added type conversion for `start_time` (float), `end_time` (float), `frequency_hz` (int), and `transcript_ids` (List[int])
+
+### Files Changed
+- `shared/models.py`: Enhanced `from_dict()` methods for Transcript, Callsign, and QSO classes
+
+### Impact
+- The `/api/transcripts` endpoint now correctly returns properly typed data
+- All numeric fields are correctly converted from Redis string values to their expected types
+- The API can now properly serialize responses without type errors
+
+---
+
 ## Date: 2025-01-17
 
 ### Summary
