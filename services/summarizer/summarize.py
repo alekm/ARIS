@@ -12,6 +12,7 @@ import json
 from typing import List, Dict
 from datetime import datetime
 import ollama
+from openai import OpenAI
 
 sys.path.insert(0, '/app')
 from shared.models import Transcript, Callsign, QSO, STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS, RedisMessage
@@ -68,8 +69,15 @@ class LLMSummarizer:
         self.backend = os.getenv('LLM_BACKEND', 'ollama')
         self.model = os.getenv('LLM_MODEL', 'llama3.2:latest')
         self.host = os.getenv('LLM_HOST', 'localhost:11434')
+        self.api_key = os.getenv('LLM_API_KEY', 'not-needed')
 
-        logger.info(f"LLM backend: {self.backend}, model: {self.model}")
+        logger.info(f"LLM backend: {self.backend}, model: {self.model}, host: {self.host}")
+
+        if self.backend == 'openai':
+            self.client = OpenAI(
+                base_url=f"http://{self.host}/v1",
+                api_key=self.api_key
+            )
 
     def summarize_qso(self, transcripts: List[Transcript], callsigns: List[str]) -> str:
         """Generate a summary of a QSO session"""
@@ -102,9 +110,15 @@ Keep it brief and factual. Focus on what was actually discussed."""
                     options={'temperature': 0.3}
                 )
                 return response['message']['content'].strip()
+            elif self.backend == 'openai':
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{'role': 'user', 'content': prompt}],
+                    temperature=0.3
+                )
+                return response.choices[0].message.content.strip()
             else:
-                # Placeholder for other backends
-                return f"Summary not available (backend: {self.backend})"
+                return f"Summary not available (unknown backend: {self.backend})"
 
         except Exception as e:
             logger.error(f"LLM summarization failed: {e}")

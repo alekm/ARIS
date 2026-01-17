@@ -114,9 +114,16 @@ VAD_THRESHOLD=0.5  # Voice activity detection sensitivity
 ### LLM Settings (`.env`)
 
 ```bash
+# Option 1: Ollama
 LLM_BACKEND=ollama
 LLM_MODEL=llama3.2:latest
 LLM_HOST=host.docker.internal:11434
+
+# Option 2: OpenAI-compatible (text-generation-webui, vLLM, etc.)
+LLM_BACKEND=openai
+LLM_MODEL=your-model-name
+LLM_HOST=host.docker.internal:5000  # text-generation-webui default port
+LLM_API_KEY=not-needed
 ```
 
 ## API Endpoints

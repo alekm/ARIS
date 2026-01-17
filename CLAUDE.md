@@ -99,9 +99,10 @@ make clean                    # Stop and remove containers + volumes
 - `MAX_BUFFER_MS=30000`, `MIN_BUFFER_MS=1000`
 
 **LLM:**
-- `LLM_BACKEND=ollama` (or llama-cpp/openai-compatible)
+- `LLM_BACKEND=ollama` or `openai` (for text-generation-webui, vLLM, etc.)
 - `LLM_MODEL=llama3.2:latest`
-- `LLM_HOST=host.docker.internal:11434`
+- `LLM_HOST=host.docker.internal:11434` (omit /v1 suffix for openai backend)
+- `LLM_API_KEY=not-needed` (if required by your server)
 
 ### Service-Specific Config
 
