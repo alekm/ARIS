@@ -19,27 +19,16 @@ ARIS is a local-first, GPU-accelerated system for continuous monitoring of amate
 ## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph SDR["KiwiSDR (Solar-powered remote SDR)"]
-        kiwi[Audio Stream]
-    end
+flowchart LR
+    kiwi[KiwiSDR] --> capture[Audio Capture]
 
-    subgraph Host["Processing Host (Ubuntu) - i9-10980XE + 96GB RAM + 2x A4000"]
-        capture[Audio Capture]
-        stt[STT / Whisper]
-        redis[(Redis Streams)]
-        callsign[Callsign Extractor]
-        summarizer[Summarizer / LLM]
-        api[API / Web UI]
+    subgraph host[Processing Host]
+        capture --> stt[STT / Whisper]
+        stt --> redis[(Redis Streams)]
+        redis --> callsign[Callsign Extractor]
+        redis --> summarizer[Summarizer / LLM]
+        redis --> api[API / Web UI]
     end
-
-    kiwi --> capture
-    capture --> redis
-    redis --> stt
-    stt --> redis
-    redis --> callsign
-    redis --> summarizer
-    redis --> api
 ```
 
 ## Services
