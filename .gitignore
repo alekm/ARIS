@@ -1,0 +1,40 @@
+# Environment
+.env
+*.env.local
+
+# Data
+data/audio/*
+data/transcripts/*
+data/db/*
+data/redis/*
+data/summaries/*
+!data/**/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models
+*.bin
+*.pt
+*.onnx
+data/models/

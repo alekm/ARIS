@@ -1,0 +1,21 @@
+# Audio Capture Configuration
+
+# Mode: 'mock' or 'kiwi'
+mode: mock
+
+# KiwiSDR settings (for mode: kiwi)
+kiwi_host: 192.168.1.100  # Replace with your KiwiSDR IP
+kiwi_port: 8073
+kiwi_password: null  # If required
+
+# Frequency and mode
+frequency_hz: 7200000  # 7.2 MHz (40m band)
+mode: USB  # USB, LSB, FM, AM, CW
+
+# Audio settings
+sample_rate: 16000  # Hz - 16kHz is good for voice/Whisper
+chunk_duration_ms: 1000  # 1 second chunks
+
+# Output
+save_to_disk: false  # Also save WAV files locally
+output_dir: /data/audio

@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  audio-capture:
+    build: ./services/audio-capture
+    depends_on:
+      - redis
+    volumes:
+      - ./data/audio:/data/audio
+      - ./services/audio-capture/config.yaml:/app/config.yaml
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MODE=mock  # Change to 'kiwi' when KiwiSDR is online
+    restart: unless-stopped
+
+  stt:
+    build: ./services/stt
+    depends_on:
+      - redis
+    volumes:
+      - ./data/transcripts:/data/transcripts
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MODEL_SIZE=medium  # tiny, base, small, medium, large-v2, large-v3
+      - DEVICE=cuda  # cuda or cpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  callsign-extractor:
+    build: ./services/callsign-extractor
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    restart: unless-stopped
+
+  summarizer:
+    build: ./services/summarizer
+    depends_on:
+      - redis
+    volumes:
+      - ./data/summaries:/data/summaries
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LLM_BACKEND=ollama  # ollama, llama-cpp, or openai-compatible
+      - LLM_MODEL=llama3.2:latest
+      - LLM_HOST=host.docker.internal:11434  # Adjust for your LLM server
+    restart: unless-stopped
+
+  api:
+    build: ./services/api
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/db:/data/db
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=sqlite:////data/db/hamears.db
+    restart: unless-stopped
+
+volumes:
+  redis-data:
