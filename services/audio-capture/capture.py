@@ -255,17 +255,19 @@ class HackRFAudioSource:
         if not SOAPY_AVAILABLE:
             raise ImportError("SoapySDR not available - install python3-soapysdr and soapysdr-module-hackrf")
 
-        self.frequency = config['frequency_hz']
-        self.mode = config.get('demod_mode', config.get('mode', 'USB'))
+        # Read from environment variables first, then fall back to config file
+        self.frequency = int(os.getenv('FREQUENCY_HZ', config.get('frequency_hz', 7200000)))
+        self.mode = os.getenv('DEMOD_MODE', config.get('demod_mode', config.get('mode', 'USB')))
         self.audio_rate = config.get('sample_rate', 16000)
         self.chunk_duration = config.get('chunk_duration_ms', 1000)
 
-        # HackRF-specific settings
-        self.rf_rate = config.get('rf_sample_rate', 2000000)  # 2 MS/s default
-        self.lna_gain = config.get('lna_gain', 16)  # 0-40 dB, 8 dB steps
-        self.vga_gain = config.get('vga_gain', 20)  # 0-62 dB, 2 dB steps
-        self.bandwidth = config.get('bandwidth', 1750000)  # RF bandwidth filter
-        self.device_serial = config.get('hackrf_serial', None)
+        # HackRF-specific settings (env vars override config)
+        self.rf_rate = int(os.getenv('RF_SAMPLE_RATE', config.get('rf_sample_rate', 2000000)))  # 2 MS/s default
+        self.lna_gain = int(os.getenv('LNA_GAIN', config.get('lna_gain', 16)))  # 0-40 dB, 8 dB steps
+        self.vga_gain = int(os.getenv('VGA_GAIN', config.get('vga_gain', 20)))  # 0-62 dB, 2 dB steps
+        self.bandwidth = int(os.getenv('BANDWIDTH', config.get('bandwidth', 1750000)))  # RF bandwidth filter
+        hackrf_serial_env = os.getenv('HACKRF_SERIAL', '')
+        self.device_serial = hackrf_serial_env if hackrf_serial_env else config.get('hackrf_serial', None)
 
         # Calculate samples needed per chunk
         self.rf_samples_per_chunk = int(self.rf_rate * self.chunk_duration / 1000)
@@ -285,12 +287,58 @@ class HackRFAudioSource:
 
     def _init_device(self):
         """Initialize HackRF via SoapySDR"""
-        # Find HackRF device
-        args = {'driver': 'hackrf'}
-        if self.device_serial:
-            args['serial'] = self.device_serial
-
-        self.sdr = SoapySDR.Device(args)
+        # Debug: Check module path
+        module_path = os.getenv('SOAPY_SDR_MODULE_PATH', 'not set')
+        logger.info(f"SOAPY_SDR_MODULE_PATH: {module_path}")
+        
+        # Debug: Check if module files exist
+        import glob
+        module_dirs = module_path.split(':') if module_path != 'not set' else []
+        for mod_dir in module_dirs:
+            if os.path.exists(mod_dir):
+                modules = glob.glob(f"{mod_dir}/*.so")
+                logger.info(f"Found {len(modules)} module(s) in {mod_dir}: {[os.path.basename(m) for m in modules]}")
+            else:
+                logger.warning(f"Module directory does not exist: {mod_dir}")
+        
+        # Debug: Check if USB device is accessible
+        usb_devices = glob.glob('/dev/bus/usb/*/*')
+        logger.info(f"Found {len(usb_devices)} USB device(s) in /dev/bus/usb/")
+        
+        # List all available devices for debugging
+        try:
+            all_devs = SoapySDR.Device.enumerate()
+            logger.info(f"Found {len(all_devs)} total SoapySDR device(s):")
+            for i, dev in enumerate(all_devs):
+                logger.info(f"  Device {i}: {dev}")
+        except Exception as e:
+            logger.warning(f"Could not enumerate devices: {e}")
+        
+        # Try to find HackRF device - first try without driver specification
+        # Sometimes SoapySDR needs to auto-detect
+        try:
+            # Try auto-detection first
+            logger.info("Attempting to auto-detect HackRF device...")
+            all_devs = SoapySDR.Device.enumerate()
+            hackrf_devs = [d for d in all_devs if 'hackrf' in str(d).lower() or 'driver=hackrf' in str(d)]
+            if hackrf_devs:
+                logger.info(f"Found HackRF device via enumeration: {hackrf_devs[0]}")
+                self.sdr = SoapySDR.Device(hackrf_devs[0])
+            else:
+                # Fall back to explicit driver specification
+                logger.info("No HackRF found in enumeration, trying explicit driver...")
+                args = {'driver': 'hackrf'}
+                if self.device_serial:
+                    args['serial'] = self.device_serial
+                self.sdr = SoapySDR.Device(args)
+        except RuntimeError as e:
+            logger.error(f"Failed to create HackRF device: {e}")
+            logger.error("This usually means:")
+            logger.error("  1. HackRF USB device not accessible (check USB passthrough)")
+            logger.error("  2. soapysdr-module-hackrf not found (check module path)")
+            logger.error("  3. USB permissions issue")
+            logger.error("  4. Module loaded but can't access USB device")
+            raise
 
         # Configure RX channel
         self.sdr.setSampleRate(SOAPY_SDR_RX, 0, self.rf_rate)

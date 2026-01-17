@@ -1,43 +1,68 @@
-version: '3.8'
-
 services:
   redis:
+    container_name: aris-redis
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # Redis port removed from host exposure for security
+    # Services access via internal Docker network
     volumes:
       - ./data/redis:/data
     command: redis-server --appendonly yes
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   audio-capture:
-    build: ./services/audio-capture
+    container_name: aris-audio-capture
+    build:
+      context: .
+      dockerfile: ./services/audio-capture/Dockerfile
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     volumes:
       - ./data/audio:/data/audio
       - ./services/audio-capture/config.yaml:/app/config.yaml
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - MODE=mock  # mock, kiwi, or hackrf
-    # Uncomment for HackRF USB passthrough:
-    # privileged: true
-    # devices:
-    #   - /dev/bus/usb:/dev/bus/usb
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - MODE=${MODE:-hackrf}  # mock, kiwi, or hackrf
+      - KIWI_HOST=${KIWI_HOST:-}
+      - KIWI_PORT=${KIWI_PORT:-8073}
+      - KIWI_PASSWORD=${KIWI_PASSWORD:-}
+      - FREQUENCY_HZ=${FREQUENCY_HZ:-7188000}
+      - DEMOD_MODE=${DEMOD_MODE:-LSB}
+      - HACKRF_SERIAL=${HACKRF_SERIAL:-}
+      - RF_SAMPLE_RATE=${RF_SAMPLE_RATE:-2000000}
+      - LNA_GAIN=${LNA_GAIN:-16}
+      - VGA_GAIN=${VGA_GAIN:-20}
+      - BANDWIDTH=${BANDWIDTH:-1750000}
+      - SOAPY_SDR_MODULE_PATH=/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.8:/usr/lib/soapysdr/modules0.8:/usr/local/lib/SoapySDR/modules0.8
+    # HackRF USB passthrough enabled
+    privileged: true
+    user: root  # Run as root to ensure USB device access
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
     restart: unless-stopped
 
   stt:
-    build: ./services/stt
+    container_name: aris-stt
+    build:
+      context: .
+      dockerfile: ./services/stt/Dockerfile
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     volumes:
       - ./data/transcripts:/data/transcripts
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - MODEL_SIZE=medium  # tiny, base, small, medium, large-v2, large-v3
-      - DEVICE=cuda  # cuda or cpu
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - MODEL_SIZE=${MODEL_SIZE:-medium}  # tiny, base, small, medium, large-v2, large-v3
+      - DEVICE=${DEVICE:-cuda}  # cuda or cpu
+      - VAD_THRESHOLD=${VAD_THRESHOLD:-0.5}
     deploy:
       resources:
         reservations:
@@ -48,41 +73,62 @@ services:
     restart: unless-stopped
 
   callsign-extractor:
-    build: ./services/callsign-extractor
+    container_name: aris-callsign-extractor
+    build:
+      context: .
+      dockerfile: ./services/callsign-extractor/Dockerfile
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
     restart: unless-stopped
 
   summarizer:
-    build: ./services/summarizer
+    container_name: aris-summarizer
+    build:
+      context: .
+      dockerfile: ./services/summarizer/Dockerfile
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     volumes:
       - ./data/summaries:/data/summaries
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - LLM_BACKEND=ollama  # ollama, llama-cpp, or openai-compatible
-      - LLM_MODEL=llama3.2:latest
-      - LLM_HOST=host.docker.internal:11434  # Adjust for your LLM server
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - LLM_BACKEND=${LLM_BACKEND:-ollama}  # ollama, llama-cpp, or openai-compatible
+      - LLM_MODEL=${LLM_MODEL:-llama3.2:latest}
+      - LLM_HOST=${LLM_HOST:-host.docker.internal:11434}  # Adjust for your LLM server
+      - LLM_API_KEY=${LLM_API_KEY:-}
     restart: unless-stopped
 
   api:
-    build: ./services/api
+    container_name: aris-api
+    build:
+      context: .
+      dockerfile: ./services/api/Dockerfile
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./data/db:/data/db
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DATABASE_URL=sqlite:////data/db/aris.db
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////data/db/aris.db}
+      - API_PORT=8000
+      - API_HOST=${API_HOST:-0.0.0.0}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 volumes:
   redis-data:

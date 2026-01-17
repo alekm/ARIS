@@ -15,7 +15,7 @@ sys.path.insert(0, '/app')
 from shared.models import AudioChunk, Transcript, STREAM_AUDIO, STREAM_TRANSCRIPTS, RedisMessage
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -134,6 +134,8 @@ class STTService:
     def process_chunk(self, chunk_data):
         """Process a single audio chunk"""
         try:
+            # Debug: log what we receive
+            logger.debug(f"Received chunk_data keys: {list(chunk_data.keys()) if isinstance(chunk_data, dict) else 'not a dict'}")
             chunk = RedisMessage.decode(chunk_data, AudioChunk)
 
             # Convert to float32

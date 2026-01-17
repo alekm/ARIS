@@ -1,7 +1,7 @@
 # Audio Capture Configuration
 
 # Mode: 'mock', 'kiwi', or 'hackrf'
-mode: mock
+mode: hackrf
 
 # KiwiSDR settings (for mode: kiwi)
 kiwi_host: 192.168.1.100  # Replace with your KiwiSDR IP
@@ -16,7 +16,7 @@ vga_gain: 20  # VGA gain in dB (0-62, 2 dB steps)
 bandwidth: 1750000  # RF bandwidth filter in Hz
 
 # Frequency and demodulation mode
-frequency_hz: 7200000  # 7.2 MHz (40m band)
+frequency_hz: 7188000  # 7.188 MHz (40m band)
 demod_mode: USB  # USB, LSB, FM, AM
 
 # Audio settings

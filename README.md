@@ -73,7 +73,72 @@ docker compose up -d
 4. Access the web UI:
 ```bash
 open http://localhost:8000
+# Or use the port configured in .env: http://localhost:${API_PORT}
 ```
+
+## Deployment
+
+### Production Deployment Checklist
+
+Before deploying to production, ensure:
+
+1. **Environment Configuration**
+   - Copy `.env.example` to `.env` and configure all settings
+   - Set appropriate `API_PORT` if not using default 8000
+   - Configure `LLM_HOST` for your deployment environment:
+     - Docker Compose: `host.docker.internal:11434`
+     - Kubernetes: Use service name or external IP
+     - Docker Swarm: Use service name or overlay network
+
+2. **Security**
+   - Redis is now internal-only (not exposed to host) ✅
+   - Review and restrict API port access via firewall if needed
+   - Use strong passwords for any external services (KiwiSDR, etc.)
+
+3. **Health Checks**
+   - Services include health checks for better monitoring
+   - Redis health check ensures services wait for Redis to be ready
+   - API health check available at `/api/stats`
+
+4. **Data Persistence**
+   - Ensure `./data` directory has proper permissions
+   - Consider backing up `./data/db`, `./data/redis`, and other data directories
+
+5. **GPU Configuration**
+   - Verify NVIDIA Docker runtime is configured: `docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi`
+   - STT service requires GPU access
+
+### Deployment Commands
+
+```bash
+# Build and start all services
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
+
+# Check service health
+docker compose ps
+
+# Stop services
+docker compose down
+
+# Stop and remove volumes (⚠️ deletes data)
+docker compose down -v
+```
+
+### Environment Variables
+
+All configuration is now managed via environment variables in `.env`:
+
+- **API Configuration**: `API_PORT`, `API_HOST`
+- **Redis**: `REDIS_HOST`, `REDIS_PORT` (defaults work for Docker Compose)
+- **Audio Capture**: `MODE`, `KIWI_HOST`, `FREQUENCY_HZ`, `DEMOD_MODE`
+- **STT**: `MODEL_SIZE`, `DEVICE`, `VAD_THRESHOLD`
+- **LLM**: `LLM_BACKEND`, `LLM_MODEL`, `LLM_HOST`, `LLM_API_KEY`
+- **Database**: `DATABASE_URL`
+
+See `.env.example` for all available options and defaults.
 
 ### With Real KiwiSDR
 
@@ -235,10 +300,14 @@ docker compose logs -f stt
 - [ ] Historical trend analysis
 
 ### Phase 4: Production Hardening
+- [x] Environment variable configuration (.env.example)
+- [x] Redis security (internal-only access)
+- [x] Health checks for services
+- [x] Configurable ports and settings
 - [ ] PostgreSQL for long-term storage
 - [ ] Performance optimization
 - [ ] Systemd service files
-- [ ] Monitoring and health checks
+- [ ] Additional monitoring and alerting
 
 ## Hardware Requirements
 

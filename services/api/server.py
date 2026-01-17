@@ -5,6 +5,7 @@ Provides REST API and web UI for browsing transcripts, callsigns, and QSOs
 """
 import os
 import sys
+import time
 import logging
 from typing import List, Optional
 from datetime import datetime
@@ -16,8 +17,8 @@ from pydantic import BaseModel
 
 sys.path.insert(0, '/app')
 from shared.models import (
-    Transcript, Callsign, QSO,
-    STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS,
+    Transcript, Callsign, QSO, AudioChunk,
+    STREAM_AUDIO, STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS,
     RedisMessage
 )
 
@@ -177,10 +178,38 @@ async def root():
 async def get_stats():
     """Get system statistics"""
     try:
+        # Get stream lengths
+        audio_count = redis_client.xlen(STREAM_AUDIO)
+        transcripts_count = redis_client.xlen(STREAM_TRANSCRIPTS)
+        callsigns_count = redis_client.xlen(STREAM_CALLSIGNS)
+        qsos_count = redis_client.xlen(STREAM_QSOS)
+        
+        # Get most recent audio chunk timestamp to check if audio is flowing
+        recent_audio = None
+        if audio_count > 0:
+            try:
+                messages = redis_client.xrevrange(STREAM_AUDIO, count=1)
+                if messages:
+                    msg_id, msg_data = messages[0]
+                    chunk = RedisMessage.decode(msg_data, AudioChunk)
+                    recent_audio = {
+                        "last_chunk_time": chunk.timestamp,
+                        "last_chunk_datetime": datetime.fromtimestamp(chunk.timestamp).isoformat(),
+                        "frequency_hz": chunk.frequency_hz,
+                        "mode": chunk.mode,
+                        "sample_rate": chunk.sample_rate,
+                        "duration_ms": chunk.duration_ms
+                    }
+            except Exception as e:
+                logger.warning(f"Could not decode recent audio chunk: {e}")
+        
         stats = {
-            "transcripts_count": redis_client.xlen(STREAM_TRANSCRIPTS),
-            "callsigns_count": redis_client.xlen(STREAM_CALLSIGNS),
-            "qsos_count": redis_client.xlen(STREAM_QSOS),
+            "audio_chunks_count": audio_count,
+            "transcripts_count": transcripts_count,
+            "callsigns_count": callsigns_count,
+            "qsos_count": qsos_count,
+            "recent_audio": recent_audio,
+            "audio_flowing": recent_audio is not None and (time.time() - recent_audio["last_chunk_time"]) < 5.0 if recent_audio else False,
             "uptime": "N/A"  # TODO: Track service uptime
         }
         return stats
