@@ -995,6 +995,7 @@ class AudioCaptureService:
             raise ValueError(f"Unknown mode: {mode}. Valid modes: mock, kiwi")
 
         self.running = False
+        self.paused = False  # Control whether to capture or pause
         self.control_group = "audio-capture-service"
         self.control_consumer = "main"
 
@@ -1137,7 +1138,16 @@ class AudioCaptureService:
                     logger.info(f"Control command: set_noise_blanker enabled={enabled} - {'success' if success else 'failed'}")
                 else:
                     logger.warning(f"Source does not support set_noise_blanker")
-            
+
+            # Handle start/stop capture
+            elif command.get('command') == 'stop_capture':
+                self.paused = True
+                logger.info("Control command: Audio capture PAUSED")
+
+            elif command.get('command') == 'start_capture':
+                self.paused = False
+                logger.info("Control command: Audio capture RESUMED")
+
             # Acknowledge message
             self.redis.xack(STREAM_CONTROL, self.control_group, msg_id)
             logger.debug(f"Acknowledged message {msg_id}")
@@ -1180,7 +1190,12 @@ class AudioCaptureService:
                     self.check_control_commands()
                     logger.info("check_control_commands() returned")
                     last_control_check = time.time()
-                
+
+                # If paused, sleep and skip chunk reading
+                if self.paused:
+                    time.sleep(1.0)
+                    continue
+
                 try:
                     logger.info("About to call read_chunk()...")
                     import sys

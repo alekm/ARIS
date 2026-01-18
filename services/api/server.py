@@ -210,8 +210,11 @@ async def root():
             
             <h3 style="color: #00aaff; margin-top: 10px;">Control Endpoints (POST)</h3>
             <ul>
+                <li><code>POST /api/control/start</code> - Start/resume audio capture</li>
+                <li><code>POST /api/control/stop</code> - Stop/pause audio capture</li>
                 <li><code>POST /api/control/frequency</code> - Change receiver frequency (body: {"frequency_hz": 14313000})</li>
                 <li><code>POST /api/control/mode</code> - Change demodulation mode (body: {"mode": "USB"})</li>
+                <li><code>POST /api/control/summarize</code> - Manually trigger QSO summarization</li>
             </ul>
             
             <h3 style="color: #00aaff; margin-top: 10px;">Audio Endpoints (GET)</h3>
@@ -248,10 +251,18 @@ async def root():
         </div>
 
         <div class="card">
+            <h2>Capture Control</h2>
+            <button onclick="startCapture()" style="background: #00ff00;">▶️ Start Capture</button>
+            <button onclick="stopCapture()" style="background: #ffaa00;">⏸️ Stop Capture</button>
+            <div id="capture-status" style="margin-top: 10px; font-size: 0.9em;"></div>
+        </div>
+
+        <div class="card">
             <h2>Quick Actions</h2>
             <button onclick="loadTranscripts()">Load Recent Transcripts</button>
             <button onclick="loadCallsigns()">Load Recent Callsigns</button>
             <button onclick="loadQSOs()">Load QSO Summaries</button>
+            <button onclick="triggerSummarize()">🤖 Trigger QSO Summarization</button>
             <button onclick="clearTranscripts()" style="background: #ff0000; color: #ffffff;">⚠️ Clear All Transcripts</button>
             <button onclick="window.location.href='/api/monitor'">📊 Real-Time Monitor</button>
             <button onclick="window.location.href='/docs'">📖 API Docs</button>
@@ -282,7 +293,7 @@ async def root():
                 if (!confirm('Are you sure you want to clear ALL transcripts? This cannot be undone.')) {
                     return;
                 }
-                
+
                 try {
                     const response = await fetch('/api/transcripts', {
                         method: 'DELETE'
@@ -296,6 +307,82 @@ async def root():
                     }
                 } catch (error) {
                     alert('Error clearing transcripts: ' + error.message);
+                }
+            }
+
+            async function triggerSummarize() {
+                try {
+                    const response = await fetch('/api/control/summarize', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        alert('✓ ' + result.message);
+                        // Reload QSOs if they're currently displayed
+                        const resultsDiv = document.getElementById('results');
+                        if (resultsDiv.innerHTML.includes('QSO Summaries')) {
+                            setTimeout(loadQSOs, 2000); // Wait 2s for summarization
+                        }
+                    } else {
+                        alert('✗ Error: ' + (result.detail || 'Unknown error'));
+                    }
+                } catch (error) {
+                    alert('✗ Error: ' + error.message);
+                }
+            }
+
+            async function startCapture() {
+                const statusDiv = document.getElementById('capture-status');
+                statusDiv.innerHTML = '<span style="color: #ffaa00;">Starting capture...</span>';
+
+                try {
+                    const response = await fetch('/api/control/start', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        statusDiv.innerHTML = '<span style="color: #00ff00;">✓ ' + result.message + '</span>';
+                        setTimeout(() => statusDiv.innerHTML = '', 3000);
+                    } else {
+                        statusDiv.innerHTML = '<span style="color: #ff0000;">✗ Error: ' + (result.detail || 'Unknown error') + '</span>';
+                    }
+                } catch (error) {
+                    statusDiv.innerHTML = '<span style="color: #ff0000;">✗ Error: ' + error.message + '</span>';
+                }
+            }
+
+            async function stopCapture() {
+                const statusDiv = document.getElementById('capture-status');
+                statusDiv.innerHTML = '<span style="color: #ffaa00;">Stopping capture...</span>';
+
+                try {
+                    const response = await fetch('/api/control/stop', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        statusDiv.innerHTML = '<span style="color: #ffaa00;">⏸️ ' + result.message + '</span>';
+                        setTimeout(() => statusDiv.innerHTML = '', 3000);
+                    } else {
+                        statusDiv.innerHTML = '<span style="color: #ff0000;">✗ Error: ' + (result.detail || 'Unknown error') + '</span>';
+                    }
+                } catch (error) {
+                    statusDiv.innerHTML = '<span style="color: #ff0000;">✗ Error: ' + error.message + '</span>';
                 }
             }
 
@@ -790,7 +877,7 @@ async def set_agc(request: AGCRequest, req: Request = None):
 async def set_noise_blanker(request: NoiseBlankerRequest, req: Request = None):
     """
     Enable/disable noise blanker
-    
+
     - **enabled**: True to enable, False to disable
     """
     try:
@@ -799,10 +886,10 @@ async def set_noise_blanker(request: NoiseBlankerRequest, req: Request = None):
             'enabled': 'true' if request.enabled else 'false',
             'timestamp': str(time.time())
         }
-        
+
         redis_client.xadd(STREAM_CONTROL, command, maxlen=100)
         logger.info(f"Noise blanker change command sent: {request.enabled}")
-        
+
         return {
             "status": "success",
             "message": f"Noise blanker {'enabled' if request.enabled else 'disabled'}",
@@ -810,6 +897,75 @@ async def set_noise_blanker(request: NoiseBlankerRequest, req: Request = None):
         }
     except Exception as e:
         logger.error(f"Error sending noise blanker command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/control/summarize", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def trigger_summarize(req: Request = None):
+    """
+    Manually trigger QSO summarization for pending transcripts
+
+    Forces the summarizer to process all transcripts since the last QSO summary,
+    regardless of time gap.
+    """
+    try:
+        command = {
+            'command': 'trigger_summarize',
+            'timestamp': str(time.time())
+        }
+
+        redis_client.xadd(STREAM_CONTROL, command, maxlen=100)
+        logger.info("Manual summarization trigger sent")
+
+        return {
+            "status": "success",
+            "message": "Summarization triggered - check /api/qsos for results"
+        }
+    except Exception as e:
+        logger.error(f"Error sending summarization trigger command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/control/start", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def start_capture(req: Request = None):
+    """
+    Start/resume audio capture and processing
+    """
+    try:
+        command = {
+            'command': 'start_capture',
+            'timestamp': str(time.time())
+        }
+
+        redis_client.xadd(STREAM_CONTROL, command, maxlen=100)
+        logger.info("Audio capture start command sent")
+
+        return {
+            "status": "success",
+            "message": "Audio capture started"
+        }
+    except Exception as e:
+        logger.error(f"Error sending start command: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/control/stop", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def stop_capture(req: Request = None):
+    """
+    Stop/pause audio capture and processing
+    """
+    try:
+        command = {
+            'command': 'stop_capture',
+            'timestamp': str(time.time())
+        }
+
+        redis_client.xadd(STREAM_CONTROL, command, maxlen=100)
+        logger.info("Audio capture stop command sent")
+
+        return {
+            "status": "success",
+            "message": "Audio capture stopped"
+        }
+    except Exception as e:
+        logger.error(f"Error sending stop command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/kiwi/status")

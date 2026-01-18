@@ -15,7 +15,7 @@ import ollama
 from openai import OpenAI
 
 sys.path.insert(0, '/app')
-from shared.models import Transcript, Callsign, QSO, STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS, RedisMessage
+from shared.models import Transcript, Callsign, QSO, STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS, STREAM_CONTROL, RedisMessage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -147,7 +147,7 @@ class SummarizerService:
         self.consumer_name = f'summarizer-{os.getpid()}'
 
         # Create consumer groups
-        for stream in [STREAM_TRANSCRIPTS, STREAM_CALLSIGNS]:
+        for stream in [STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_CONTROL]:
             try:
                 self.redis.xgroup_create(stream, self.consumer_group, id='0', mkstream=True)
             except redis.exceptions.ResponseError as e:
@@ -182,6 +182,31 @@ class SummarizerService:
 
         except Exception as e:
             logger.error(f"Error processing callsign: {e}", exc_info=True)
+
+    def process_control_command(self, control_data):
+        """Process control commands"""
+        try:
+            # Decode control message
+            command_dict = {}
+            for key, value in control_data.items():
+                key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+                val_str = value.decode('utf-8') if isinstance(value, bytes) else value
+                command_dict[key_str] = val_str
+
+            command = command_dict.get('command', '')
+
+            if command == 'trigger_summarize':
+                logger.info("Manual summarization trigger received")
+                # Summarize all active sessions immediately
+                for frequency_hz in list(self.session_manager.transcript_buffer.keys()):
+                    transcripts = self.session_manager.transcript_buffer.get(frequency_hz, [])
+                    if transcripts:
+                        mode = transcripts[0].mode
+                        logger.info(f"Force summarizing {frequency_hz} Hz ({len(transcripts)} transcripts)")
+                        self.summarize_session(frequency_hz, mode)
+
+        except Exception as e:
+            logger.error(f"Error processing control command: {e}", exc_info=True)
 
     def summarize_session(self, frequency_hz: int, mode: str):
         """Generate summary for a completed session"""
@@ -227,16 +252,18 @@ class SummarizerService:
 
         last_transcript_id = '>'
         last_callsign_id = '>'
+        last_control_id = '>'
 
         try:
             while self.running:
-                # Read from both streams
+                # Read from all streams
                 messages = self.redis.xreadgroup(
                     self.consumer_group,
                     self.consumer_name,
                     {
                         STREAM_TRANSCRIPTS: last_transcript_id,
-                        STREAM_CALLSIGNS: last_callsign_id
+                        STREAM_CALLSIGNS: last_callsign_id,
+                        STREAM_CONTROL: last_control_id
                     },
                     count=5,
                     block=1000
@@ -253,6 +280,8 @@ class SummarizerService:
                             self.process_transcript(msg_data)
                         elif stream_name == STREAM_CALLSIGNS:
                             self.process_callsign(msg_data)
+                        elif stream_name == STREAM_CONTROL:
+                            self.process_control_command(msg_data)
 
                         self.redis.xack(stream_name, self.consumer_group, msg_id)
 
