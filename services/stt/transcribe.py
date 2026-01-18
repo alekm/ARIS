@@ -121,6 +121,9 @@ class STTService:
             full_text = full_text.strip()
 
             if full_text:
+                if self.is_hallucination(full_text):
+                    return None
+                    
                 logger.info(f"Transcribed ({segment_count} segments): {full_text[:100]}...")
                 return full_text, info.language_probability
             else:
@@ -130,6 +133,34 @@ class STTService:
         except Exception as e:
             logger.error(f"Transcription error: {e}")
             return None
+
+    def is_hallucination(self, text):
+        """Check if text is a known Whisper hallucination"""
+        hallucinations = [
+            "Thanks for watching",
+            "Thank you for watching",
+            "subscribe",
+            "like and subscribe",
+            "MBC",
+            "www.",
+            ".com",
+            "Amara.org"
+        ]
+        
+        text_lower = text.lower()
+        
+        # Check for exact matches or strong partial matches
+        for h in hallucinations:
+            if h.lower() in text_lower:
+                logger.info(f"Filtered hallucination: '{text}' (matches '{h}')")
+                return True
+                
+        # Check for repetition (e.g. "Bye Bye Bye Bye")
+        if len(text) > 10 and len(set(text.split())) < 3:
+             logger.info(f"Filtered repetitive hallucination: '{text}'")
+             return True
+             
+        return False
 
     def publish_transcript(self, text, confidence, chunk_info):
         """Publish transcript to Redis stream"""

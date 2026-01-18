@@ -30,23 +30,13 @@ services:
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - MODE=${MODE:-hackrf} # mock, kiwi, or hackrf
+      - MODE=${MODE:-kiwi} # mock or kiwi
       - KIWI_HOST=${KIWI_HOST:-172.16.250.99}
       - KIWI_PORT=${KIWI_PORT:-8073}
       - KIWI_PASSWORD=${KIWI_PASSWORD:-}
       - FREQUENCY_HZ=${FREQUENCY_HZ:-7188000}
       - DEMOD_MODE=${DEMOD_MODE:-LSB}
-      - HACKRF_SERIAL=${HACKRF_SERIAL:-}
-      - RF_SAMPLE_RATE=${RF_SAMPLE_RATE:-2000000}
-      - LNA_GAIN=${LNA_GAIN:-16}
-      - VGA_GAIN=${VGA_GAIN:-20}
-      - BANDWIDTH=${BANDWIDTH:-1750000}
-      - SOAPY_SDR_MODULE_PATH=/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.8:/usr/lib/soapysdr/modules0.8:/usr/local/lib/SoapySDR/modules0.8
-    # HackRF USB passthrough enabled
-    privileged: true
-    user: root # Run as root to ensure USB device access
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
+      - DEBUG_KIWI=${DEBUG_KIWI:-false}
     restart: unless-stopped
   stt:
     container_name: aris-stt
@@ -104,6 +94,8 @@ services:
       - LLM_MODEL=${LLM_MODEL:-llama3.2:latest}
       - LLM_HOST=${LLM_HOST:-host.docker.internal:11434} # Adjust for your LLM server
       - LLM_API_KEY=${LLM_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
   api:
     container_name: aris-api

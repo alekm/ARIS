@@ -252,6 +252,7 @@ async def root():
             <button onclick="loadTranscripts()">Load Recent Transcripts</button>
             <button onclick="loadCallsigns()">Load Recent Callsigns</button>
             <button onclick="loadQSOs()">Load QSO Summaries</button>
+            <button onclick="clearTranscripts()" style="background: #ff0000; color: #ffffff;">⚠️ Clear All Transcripts</button>
             <button onclick="window.location.href='/api/monitor'">📊 Real-Time Monitor</button>
             <button onclick="window.location.href='/docs'">📖 API Docs</button>
         </div>
@@ -277,9 +278,51 @@ async def root():
                 displayResults('QSO Summaries', data);
             }
 
+            async function clearTranscripts() {
+                if (!confirm('Are you sure you want to clear ALL transcripts? This cannot be undone.')) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/api/transcripts', {
+                        method: 'DELETE'
+                    });
+                    const result = await response.json();
+                    alert(result.message);
+                    // Reload if transcripts are currently displayed
+                    const resultsDiv = document.getElementById('results');
+                    if (resultsDiv.innerHTML.includes('Transcripts')) {
+                         loadTranscripts();
+                    }
+                } catch (error) {
+                    alert('Error clearing transcripts: ' + error.message);
+                }
+            }
+
             function displayResults(title, data) {
                 const div = document.getElementById('results');
-                div.innerHTML = `<div class="card"><h2>${title}</h2><pre>${JSON.stringify(data, null, 2)}</pre></div>`;
+                
+                if (title === 'Transcripts' && Array.isArray(data)) {
+                    let html = `<div class="card"><h2>${title}</h2>`;
+                    html += '<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">';
+                    html += '<tr style="background: #333; color: #00ff00; text-align: left;">';
+                    html += '<th style="padding: 8px;">Time</th><th style="padding: 8px;">Freq</th><th style="padding: 8px;">Mode</th><th style="padding: 8px;">Conf</th><th style="padding: 8px;">Text</th></tr>';
+                    
+                    data.forEach(item => {
+                        html += '<tr style="border-bottom: 1px solid #333;">';
+                        html += `<td style="padding: 8px; white-space: nowrap;">${item.datetime.split('T')[1].split('.')[0]}</td>`;
+                        html += `<td style="padding: 8px;">${(item.frequency_hz / 1000).toFixed(1)}</td>`;
+                        html += `<td style="padding: 8px;">${item.mode}</td>`;
+                        html += `<td style="padding: 8px;">${(item.confidence * 100).toFixed(0)}%</td>`;
+                        html += `<td style="padding: 8px; color: #fff; white-space: normal; word-wrap: break-word;">${item.text}</td>`;
+                        html += '</tr>';
+                    });
+                    
+                    html += '</table></div>';
+                    div.innerHTML = html;
+                } else {
+                    div.innerHTML = `<div class="card"><h2>${title}</h2><pre>${JSON.stringify(data, null, 2)}</pre></div>`;
+                }
             }
 
             async function changeFrequency() {
@@ -430,6 +473,18 @@ async def get_stats():
         return stats
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/transcripts", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+async def clear_transcripts():
+    """Clear all transcripts"""
+    try:
+        redis_client.delete(STREAM_TRANSCRIPTS)
+        logger.info("Cleared all transcripts")
+        return {"status": "success", "message": "All transcripts cleared"}
+    except Exception as e:
+        logger.error(f"Error clearing transcripts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

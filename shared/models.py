@@ -43,9 +43,17 @@ class AudioChunk:
         d['s_meter'] = float(d.get('s_meter', 0.0)) if isinstance(d.get('s_meter'), str) else d.get('s_meter', 0.0)
         d['signal_strength_db'] = float(d.get('signal_strength_db', -150.0)) if isinstance(d.get('signal_strength_db'), str) else d.get('signal_strength_db', -150.0)
         d['squelch_open'] = d.get('squelch_open', True) if not isinstance(d.get('squelch_open'), str) else d.get('squelch_open', 'true').lower() == 'true'
-        d['rssi'] = float(d['rssi']) if d.get('rssi') is not None and isinstance(d['rssi'], str) else d.get('rssi')
-        d['low_cut'] = int(d['low_cut']) if d.get('low_cut') is not None and isinstance(d.get('low_cut'), str) else d.get('low_cut')
-        d['high_cut'] = int(d['high_cut']) if d.get('high_cut') is not None and isinstance(d.get('high_cut'), str) else d.get('high_cut')
+        # Handle rssi - convert from string if non-empty, otherwise use None
+        rssi_val = d.get('rssi')
+        if rssi_val is not None and isinstance(rssi_val, str):
+            d['rssi'] = float(rssi_val) if rssi_val.strip() else None
+        else:
+            d['rssi'] = rssi_val
+        # Handle low_cut and high_cut
+        low_cut_val = d.get('low_cut')
+        d['low_cut'] = int(low_cut_val) if low_cut_val is not None and isinstance(low_cut_val, str) and low_cut_val.strip() else low_cut_val
+        high_cut_val = d.get('high_cut')
+        d['high_cut'] = int(high_cut_val) if high_cut_val is not None and isinstance(high_cut_val, str) and high_cut_val.strip() else high_cut_val
         return cls(**d)
 
 
@@ -133,12 +141,15 @@ class RedisMessage:
         if hasattr(obj, 'to_dict'):
             result = {}
             for k, v in obj.to_dict().items():
-                # Strings, ints, floats pass through as-is
-                # Hex strings (from bytes conversion) are already strings, pass through
-                if isinstance(v, (str, int, float)):
+                # Check bool first (since bool is a subclass of int)
+                if isinstance(v, bool):
+                    result[k] = 'true' if v else 'false'  # Convert bool to string
+                elif isinstance(v, (str, int, float)):
                     result[k] = v
                 elif isinstance(v, bytes):
                     result[k] = v.hex()  # Convert bytes to hex string
+                elif v is None:
+                    result[k] = ''  # Convert None to empty string
                 else:
                     result[k] = json.dumps(v)  # JSON encode other types
             return result
