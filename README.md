@@ -12,7 +12,9 @@ ARIS is a local-first, GPU-accelerated system for continuous monitoring of amate
 
 - **Real-time STT** using faster-whisper (GPU-accelerated) with hallucination filtering
 - **Automatic callsign extraction** with phonetic alphabet support
-- **AI-powered QSO summarization** (local LLM) with automatic session gap detection
+- **Automatic callsign extraction** with phonetic alphabet support
+- **AI-powered QSO summarization** (local LLM) with automatic session gap detection and recursive summarization for long audio
+- **Data Persistence** using SQLite for reliable storage of transcripts and history
 - **KiwiSDR Integration** with robust passive-handshake connection
 - **Web Dashboard** for monitoring, searching, and managing transcripts
 - **Control** of Frequency and Mode (LSB/USB/AM/CW) directly from UI
@@ -280,7 +282,9 @@ docker compose logs -f stt
 - [x] Redis security (internal-only access)
 - [x] Health checks for services
 - [x] Configurable ports and settings
-- [ ] PostgreSQL for long-term storage
+- [x] Configurable ports and settings
+- [x] SQLite for long-term storage (PostgreSQL planned for scale)
+- [ ] Performance optimization
 - [ ] Performance optimization
 - [ ] Systemd service files
 - [ ] Additional monitoring and alerting

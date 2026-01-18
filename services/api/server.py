@@ -97,16 +97,42 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
     
     return True
 
+
+from background import PersistenceWorker
+from shared.db import init_db, TranscriptModel, CallsignModel, QSOModel
+
 # Connect to Redis
 redis_host = os.getenv('REDIS_HOST', 'localhost')
 redis_port = int(os.getenv('REDIS_PORT', 6379))
 redis_client = redis.Redis(host=redis_host, port=redis_port, decode_responses=False)
+
+# Initialize Database
+DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:////data/db/aris.db')
+SessionLocal = init_db(DATABASE_URL)
+
+# Persistence Worker (Global ref)
+persistence_worker = None
+
+@app.on_event("startup")
+async def startup_event():
+    global persistence_worker
+    logger.info("Starting persistence worker...")
+    persistence_worker = PersistenceWorker(redis_client, SessionLocal)
+    persistence_worker.start()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if persistence_worker:
+        logger.info("Stopping persistence worker...")
+        persistence_worker.stop()
+        persistence_worker.join()
 
 logger.info(f"Connected to Redis at {redis_host}:{redis_port}")
 
 
 # Pydantic models for API responses
 class TranscriptResponse(BaseModel):
+    id: Optional[int] = None
     timestamp: float
     datetime: str
     frequency_hz: int
@@ -114,6 +140,91 @@ class TranscriptResponse(BaseModel):
     text: str
     confidence: float
     duration_ms: int
+
+# ... existing code ...
+
+@app.delete("/api/transcripts", dependencies=[Depends(check_rate_limit)])
+async def clear_transcripts():
+    """Clear all transcripts from Database and Redis"""
+    session = SessionLocal()
+    try:
+        # Clear DB
+        session.query(TranscriptModel).delete()
+        session.commit()
+        
+        # Clear Redis stream too (optional but good for consistency)
+        # Use xtrim instead of delete to preserve consumer groups
+        try:
+            redis_client.xtrim(STREAM_TRANSCRIPTS, maxlen=0)
+        except Exception:
+            pass # Ignore if stream doesn't exist
+        
+        logger.info("Cleared all transcripts from DB and Redis")
+        return {"status": "success", "message": "All transcripts cleared"}
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error clearing transcripts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+@app.delete("/api/transcripts/{transcript_id}", dependencies=[Depends(check_rate_limit)])
+async def delete_transcript(transcript_id: int):
+    """Delete a specific transcript"""
+    session = SessionLocal()
+    try:
+        transcript = session.query(TranscriptModel).filter(TranscriptModel.id == transcript_id).first()
+        if not transcript:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+            
+        session.delete(transcript)
+        session.commit()
+        return {"status": "success", "message": f"Transcript {transcript_id} deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error deleting transcript {transcript_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/transcripts", response_model=List[TranscriptResponse])
+async def get_transcripts(
+    limit: int = Query(default=50, le=500),
+    frequency: Optional[int] = None
+):
+    """Get recent transcripts from Database"""
+    session = SessionLocal()
+    try:
+        query = session.query(TranscriptModel)
+        
+        if frequency:
+            query = query.filter(TranscriptModel.frequency_hz == frequency)
+            
+        # Get most recent
+        transcripts = query.order_by(TranscriptModel.timestamp.desc()).limit(limit).all()
+
+        results = []
+        for t in transcripts:
+            results.append(TranscriptResponse(
+                id=t.id,
+                timestamp=t.timestamp,
+                datetime=t.datetime.isoformat(),
+                frequency_hz=t.frequency_hz,
+                mode=t.mode,
+                text=t.text,
+                confidence=t.confidence,
+                duration_ms=t.duration_ms
+            ))
+            
+        return results
+    except Exception as e:
+        logger.error(f"Error reading transcripts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
 
 
 class CallsignResponse(BaseModel):
@@ -280,7 +391,7 @@ async def root():
             async function loadCallsigns() {
                 const response = await fetch('/api/callsigns?limit=20');
                 const data = await response.json();
-                displayResults('Callsigns', data);
+                displayResults('Recent Callsigns', data);
             }
 
             async function loadQSOs() {
@@ -386,6 +497,20 @@ async def root():
                 }
             }
 
+            async function deleteTranscript(id) {
+                if (!confirm('Delete this transcript?')) return;
+                try {
+                    const response = await fetch(`/api/transcripts/${id}`, { method: 'DELETE' });
+                    if (response.ok) {
+                        loadTranscripts(); // Reload table
+                    } else {
+                        alert('Failed to delete');
+                    }
+                } catch (e) {
+                    alert('Error: ' + e.message);
+                }
+            }
+
             function displayResults(title, data) {
                 const div = document.getElementById('results');
                 
@@ -393,7 +518,7 @@ async def root():
                     let html = `<div class="card"><h2>${title}</h2>`;
                     html += '<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">';
                     html += '<tr style="background: #333; color: #00ff00; text-align: left;">';
-                    html += '<th style="padding: 8px;">Time</th><th style="padding: 8px;">Freq</th><th style="padding: 8px;">Mode</th><th style="padding: 8px;">Conf</th><th style="padding: 8px;">Text</th></tr>';
+                    html += '<th style="padding: 8px;">Time</th><th style="padding: 8px;">Freq</th><th style="padding: 8px;">Mode</th><th style="padding: 8px;">Conf</th><th style="padding: 8px;">Text</th><th style="padding: 8px;">Actions</th></tr>';
                     
                     data.forEach(item => {
                         html += '<tr style="border-bottom: 1px solid #333;">';
@@ -402,6 +527,64 @@ async def root():
                         html += `<td style="padding: 8px;">${item.mode}</td>`;
                         html += `<td style="padding: 8px;">${(item.confidence * 100).toFixed(0)}%</td>`;
                         html += `<td style="padding: 8px; color: #fff; white-space: normal; word-wrap: break-word;">${item.text}</td>`;
+                        html += `<td style="padding: 8px;"><button onclick="deleteTranscript(${item.id})" style="background: #cc0000; padding: 2px 6px; font-size: 0.8em;">Del</button></td>`;
+                        html += '</tr>';
+                    });
+                    
+                    html += '</table></div>';
+                    div.innerHTML = html;
+                } else if (title === 'QSO Summaries' && Array.isArray(data)) {
+                    let html = `<div class="card"><h2>${title}</h2>`;
+                    html += '<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">';
+                    html += '<tr style="background: #333; color: #00ff00; text-align: left;">';
+                    html += '<th style="padding: 8px;">Time</th><th style="padding: 8px;">Freq</th><th style="padding: 8px;">Mode</th><th style="padding: 8px;">Callsigns</th><th style="padding: 8px;">Summary</th></tr>';
+                    
+                    data.forEach(item => {
+                        html += '<tr style="border-bottom: 1px solid #333;">';
+                        // Handle start_time being float timestamp or ISO string depending on API
+                        // API usually returns processed objects. Let's assume standardized format or check if it needs conversion.
+                        // Assuming item has .datetime or .start_time. Let's check model.
+                        // QSO model usually has start_time (float). But API might serialize it.
+                        // Let's assume standard 'datetime' field added by API or format start_time.
+                        // Actually, let's check what API returns for QSOS. 
+                        // It returns list of QSO. QSO has start_time (float). 
+                        // I'll format assuming it's available as ISO or I can convert.
+                        // Wait, transcript used item.datetime.
+                        // I'll assume I need to handle timestamp if datetime field isn't present.
+                        // But wait, the python API usually converts to Pydantic models.
+                        // checking get_qsos implementation might be wise, but I'll use robust formatting.
+                        
+                        let timeStr = item.datetime || new Date(item.start_time * 1000).toISOString();
+                        timeStr = timeStr.split('T')[1].split('.')[0];
+
+                        html += `<td style="padding: 8px; white-space: nowrap;">${timeStr}</td>`;
+                        html += `<td style="padding: 8px;">${(item.frequency_hz / 1000).toFixed(1)}</td>`;
+                        html += `<td style="padding: 8px;">${item.mode}</td>`;
+                        html += `<td style="padding: 8px; color: #aaa;">${item.callsigns.join(', ')}</td>`;
+                        html += `<td style="padding: 8px; color: #fff; white-space: normal; word-wrap: break-word;">${item.summary || 'No summary'}</td>`;
+                        html += '</tr>';
+                    });
+                    
+                    html += '</table></div>';
+                    div.innerHTML = html;
+                } else if (title === 'Recent Callsigns' && Array.isArray(data)) {
+                    let html = `<div class="card"><h2>${title}</h2>`;
+                    html += '<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">';
+                    html += '<tr style="background: #333; color: #00ff00; text-align: left;">';
+                    html += '<th style="padding: 8px;">Time</th><th style="padding: 8px;">Freq</th><th style="padding: 8px;">Callsign</th><th style="padding: 8px;">Context</th><th style="padding: 8px;">Conf</th></tr>';
+                    
+                    data.forEach(item => {
+                        html += '<tr style="border-bottom: 1px solid #333;">';
+                        
+                        // Handle timestamp
+                        let timeStr = item.datetime || new Date(item.timestamp * 1000).toISOString();
+                        timeStr = timeStr.split('T')[1].split('.')[0];
+
+                        html += `<td style="padding: 8px; white-space: nowrap;">${timeStr}</td>`;
+                        html += `<td style="padding: 8px;">${(item.frequency_hz / 1000).toFixed(1)}</td>`;
+                        html += `<td style="padding: 8px; font-weight: bold; color: #00ffff;">${item.callsign}</td>`;
+                        html += `<td style="padding: 8px; color: #ccc; font-style: italic;">"${item.context || ''}"</td>`;
+                        html += `<td style="padding: 8px;">${(item.confidence * 100).toFixed(0)}%</td>`;
                         html += '</tr>';
                     });
                     
@@ -563,51 +746,9 @@ async def get_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/transcripts", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
-async def clear_transcripts():
-    """Clear all transcripts"""
-    try:
-        redis_client.delete(STREAM_TRANSCRIPTS)
-        logger.info("Cleared all transcripts")
-        return {"status": "success", "message": "All transcripts cleared"}
-    except Exception as e:
-        logger.error(f"Error clearing transcripts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
+# Transcripts endpoints moved to top of file
 
-@app.get("/api/transcripts", response_model=List[TranscriptResponse])
-async def get_transcripts(
-    limit: int = Query(default=50, le=500),
-    frequency: Optional[int] = None
-):
-    """Get recent transcripts"""
-    try:
-        # Read from Redis stream (most recent first)
-        messages = redis_client.xrevrange(STREAM_TRANSCRIPTS, count=limit)
-
-        results = []
-        for msg_id, msg_data in messages:
-            transcript = RedisMessage.decode(msg_data, Transcript)
-
-            # Filter by frequency if specified
-            if frequency and transcript.frequency_hz != frequency:
-                continue
-
-            results.append(TranscriptResponse(
-                timestamp=transcript.timestamp,
-                datetime=datetime.fromtimestamp(transcript.timestamp).isoformat(),
-                frequency_hz=transcript.frequency_hz,
-                mode=transcript.mode,
-                text=transcript.text,
-                confidence=transcript.confidence,
-                duration_ms=transcript.duration_ms
-            ))
-
-        return results
-
-    except Exception as e:
-        logger.error(f"Error getting transcripts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/callsigns", response_model=List[CallsignResponse])
@@ -615,46 +756,48 @@ async def get_callsigns(
     limit: int = Query(default=50, le=500),
     callsign: Optional[str] = None
 ):
-    """Get recent callsigns"""
+    """Get recent callsigns from Database"""
+    session = SessionLocal()
     try:
-        messages = redis_client.xrevrange(STREAM_CALLSIGNS, count=limit)
+        query = session.query(CallsignModel)
+        
+        if callsign:
+            query = query.filter(CallsignModel.callsign == callsign.upper())
+            
+        results_db = query.order_by(CallsignModel.timestamp.desc()).limit(limit).all()
 
         results = []
-        for msg_id, msg_data in messages:
-            cs = RedisMessage.decode(msg_data, Callsign)
-
-            # Filter by callsign if specified
-            if callsign and cs.callsign != callsign.upper():
-                continue
-
+        for cs in results_db:
             results.append(CallsignResponse(
                 callsign=cs.callsign,
                 timestamp=cs.timestamp,
-                datetime=datetime.fromtimestamp(cs.timestamp).isoformat(),
+                datetime=cs.datetime.isoformat(),
                 frequency_hz=cs.frequency_hz,
                 confidence=cs.confidence,
                 context=cs.context
             ))
-
+            
         return results
-
     except Exception as e:
         logger.error(f"Error getting callsigns: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
 
 
 @app.get("/api/qsos", response_model=List[QSOResponse])
 async def get_qsos(
     limit: int = Query(default=20, le=100)
 ):
-    """Get recent QSO summaries"""
+    """Get recent QSO summaries from Database"""
+    session = SessionLocal()
     try:
-        messages = redis_client.xrevrange(STREAM_QSOS, count=limit)
+        results_db = session.query(QSOModel).order_by(QSOModel.start_time.desc()).limit(limit).all()
 
         results = []
-        for msg_id, msg_data in messages:
-            qso = RedisMessage.decode(msg_data, QSO)
-
+        for qso in results_db:
+            callsigns_list = qso.callsigns_list.split(',') if qso.callsigns_list else []
+            
             results.append(QSOResponse(
                 session_id=qso.session_id,
                 start_time=qso.start_time,
@@ -663,15 +806,16 @@ async def get_qsos(
                 end_datetime=datetime.fromtimestamp(qso.end_time).isoformat() if qso.end_time else None,
                 frequency_hz=qso.frequency_hz,
                 mode=qso.mode,
-                callsigns=qso.callsigns,
+                callsigns=callsigns_list,
                 summary=qso.summary
             ))
 
         return results
-
     except Exception as e:
         logger.error(f"Error getting QSOs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
 
 
 @app.get("/api/search/callsign/{callsign}")

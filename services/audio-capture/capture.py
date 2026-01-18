@@ -1186,9 +1186,9 @@ class AudioCaptureService:
                 logger.debug(f"Loop iteration {loop_iteration} starting...")
                 # Check for control commands every second
                 if time.time() - last_control_check > 1.0:
-                    logger.info("Checking for control commands...")
+                    logger.debug("Checking for control commands...")
                     self.check_control_commands()
-                    logger.info("check_control_commands() returned")
+                    logger.debug("check_control_commands() returned")
                     last_control_check = time.time()
 
                 # If paused, sleep and skip chunk reading
@@ -1197,11 +1197,11 @@ class AudioCaptureService:
                     continue
 
                 try:
-                    logger.info("About to call read_chunk()...")
+                    logger.debug("About to call read_chunk()...")
                     import sys
                     sys.stdout.flush()
                     chunk = self.source.read_chunk()
-                    logger.info("read_chunk() completed, publishing...")
+                    logger.debug("read_chunk() completed, publishing...")
                     self.publish_chunk(chunk)
 
                     chunk_count += 1

@@ -9,7 +9,7 @@ COPY services/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/api/*.py /app/
-COPY shared/models.py /app/shared/
+COPY shared /app/shared/
 
 # Copy static files for web UI
 COPY services/api/static /app/static

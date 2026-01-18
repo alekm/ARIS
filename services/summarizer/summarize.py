@@ -79,16 +79,72 @@ class LLMSummarizer:
                 api_key=self.api_key
             )
 
-    def summarize_qso(self, transcripts: List[Transcript], callsigns: List[str]) -> str:
-        """Generate a summary of a QSO session"""
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count (approx 4 chars per token)"""
+        return len(text) // 4
 
-        # Build context
+    def summarize_qso(self, transcripts: List[Transcript], callsigns: List[str]) -> str:
+        """
+        Generate a summary of a QSO session.
+        Uses recursive summarization for long sessions to fit context window.
+        """
+        # Constants for context management (assuming ~4k-8k context window)
+        # 3000 tokens * 4 chars = 12000 chars safe limit per chunk
+        MAX_CHARS_PER_CHUNK = 12000 
+        
+        # Calculate total size
+        full_text_combined = "".join([t.text for t in transcripts])
+        total_len = len(full_text_combined)
+
+        # Base case: fit within limit
+        if total_len <= MAX_CHARS_PER_CHUNK:
+            return self._generate_summary(transcripts, callsigns)
+
+        # Recursive case: Chunking
+        logger.info(f"Session too long ({total_len} chars), performing recursive summarization...")
+        
+        chunks = []
+        current_chunk = []
+        current_len = 0
+        
+        for t in transcripts:
+            t_len = len(t.text)
+            if current_len + t_len > MAX_CHARS_PER_CHUNK and current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_len = 0
+            
+            current_chunk.append(t)
+            current_len += t_len
+            
+        if current_chunk:
+            chunks.append(current_chunk)
+            
+        logger.info(f"Split into {len(chunks)} chunks")
+        
+        # Map: Summarize each chunk
+        chunk_summaries = []
+        for i, chunk in enumerate(chunks):
+            logger.info(f"Summarizing chunk {i+1}/{len(chunks)}...")
+            # Detect callsigns local to this chunk (optional optimization, passing all for now)
+            summary = self._generate_summary(chunk, callsigns, is_partial=True)
+            chunk_summaries.append(f"[Part {i+1}] {summary}")
+            
+        # Reduce: Final summary of summaries
+        logger.info("Generating final summary from chunks...")
+        return self._generate_final_summary(chunk_summaries, callsigns)
+
+    def _generate_summary(self, transcripts: List[Transcript], callsigns: List[str], is_partial: bool = False) -> str:
+        """Internal method to call LLM for a specific batch of transcripts"""
+        
         full_text = "\n".join([f"[{datetime.fromtimestamp(t.timestamp).strftime('%H:%M:%S')}] {t.text}"
                                for t in transcripts])
 
         callsigns_str = ", ".join(callsigns) if callsigns else "unknown stations"
+        
+        context_type = "segment of a" if is_partial else ""
 
-        prompt = f"""You are analyzing amateur radio (ham radio) communications. Below is a transcript from a QSO (conversation) or net.
+        prompt = f"""You are analyzing amateur radio (ham radio) communications. Below is a transcript from a {context_type} QSO (conversation) or net.
 
 Callsigns detected: {callsigns_str}
 
@@ -98,10 +154,34 @@ Transcript:
 Please provide a concise 2-3 sentence summary covering:
 1. Who was involved (callsigns)
 2. Main topics discussed
-3. Any notable information (antenna issues, band conditions, locations, weather, emergencies, etc.)
+3. Any notable information (signal reports, locations, weather, etc.)
 
-Keep it brief and factual. Focus on what was actually discussed."""
+Keep it brief and factual."""
 
+        return self._call_llm(prompt)
+
+    def _generate_final_summary(self, summaries: List[str], callsigns: List[str]) -> str:
+        """Generate final summary from a list of partial summaries"""
+        
+        combined_summaries = "\n\n".join(summaries)
+        callsigns_str = ", ".join(callsigns)
+
+        prompt = f"""You are analyzing a long amateur radio (ham radio) session. Below are chronological summaries of different parts of the conversation.
+
+Callsigns involved: {callsigns_str}
+
+Partial Summaries:
+{combined_summaries}
+
+Please create a single, consolidated Final Report (3-5 sentences) that synthesizes the entire session.
+- Identify the main participants.
+- Summarize the key discussion points for the whole session.
+- Note any specific operational details (bands, conditions, equipment) mentioned.
+"""
+        return self._call_llm(prompt)
+
+    def _call_llm(self, prompt: str) -> str:
+        """Helper to call the configured LLM backend"""
         try:
             if self.backend == 'ollama':
                 response = ollama.chat(

@@ -15,7 +15,7 @@ sys.path.insert(0, '/app')
 from shared.models import AudioChunk, Transcript, STREAM_AUDIO, STREAM_TRANSCRIPTS, RedisMessage
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
