@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Terminal } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
+const API_BASE = import.meta.env.VITE_API_URL || '';
 const TranscriptFeed = ({ transcripts }) => {
     const bottomRef = useRef(null);
 

@@ -30,9 +30,12 @@ services:
       - ./services/audio-capture:/app
       - ./shared:/app/shared
     environment:
-      - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MODE=kiwi
+      - KIWI_HOST=172.16.250.99
+      - KIWI_PORT=8073
+      - FREQUENCY_HZ=7188000
     restart: unless-stopped
   stt:
     container_name: aris-stt
@@ -120,8 +123,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    ports:
-      - ${API_PORT:-8000}:8000
     volumes:
       - ./data/db:/data/db
     environment:

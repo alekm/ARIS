@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import SlotCard from './SlotCard';
 import TranscriptFeed from './TranscriptFeed';
+import { useWebSocket } from '../contexts/WebSocketContext';
 
-const API_BASE = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const Dashboard = () => {
     const [slots, setSlots] = useState([
@@ -12,43 +13,58 @@ const Dashboard = () => {
         { id: 4, status: 'offline', activeConfig: null }
     ]);
     const [transcripts, setTranscripts] = useState([]);
+    const { slotsData, lastMessage } = useWebSocket();
 
+    // Initial Transcript Fetch (keep this for history)
     useEffect(() => {
-        const fetchData = async () => {
+        const fetchHistory = async () => {
             try {
-                const transRes = await fetch(`${API_BASE}/api/transcripts?limit=50`);
-                const transData = await transRes.json();
-                setTranscripts(transData);
-
-                const slotsRes = await fetch(`${API_BASE}/api/slots`);
-                const activeSlots = await slotsRes.json();
-
-                setSlots(prevSlots => prevSlots.map(slot => {
-                    const active = activeSlots.find(s => String(s.id) === String(slot.id));
-                    if (active) {
-                        return {
-                            ...slot,
-                            status: active.status,
-                            activeConfig: {
-                                frequency_hz: active.frequency_hz,
-                                mode: active.mode,
-                                host: active.host,
-                                port: active.port,
-                                mode: active.mode // Demod mode
-                            }
-                        };
-                    }
-                    return slot;
-                }));
+                const res = await fetch(`${API_BASE}/api/transcripts?limit=50`);
+                if (res.ok) {
+                    const data = await res.json();
+                    setTranscripts(data);
+                }
             } catch (e) {
-                console.error("Dashboard Poll error:", e);
+                console.error("Failed to fetch transcript history");
             }
         };
-
-        const interval = setInterval(fetchData, 2000);
-        fetchData(); // Initial
-        return () => clearInterval(interval);
+        fetchHistory();
     }, []);
+
+    // Handle Real-time Slot Updates via WebSocket
+    useEffect(() => {
+        if (slotsData && slotsData.length > 0) {
+            setSlots(prevSlots => prevSlots.map(slot => {
+                const active = slotsData.find(s => String(s.id) === String(slot.id));
+                if (active) {
+                    return {
+                        ...slot,
+                        status: active.status,
+                        activeConfig: {
+                            frequency_hz: active.frequency_hz,
+                            mode: active.mode,
+                            host: active.host,
+                            port: active.port
+                        }
+                    };
+                }
+                return slot;
+            }));
+        }
+    }, [slotsData]);
+
+    // Handle Real-time Transcripts
+    useEffect(() => {
+        if (lastMessage && lastMessage.type === 'TRANSCRIPT') {
+            setTranscripts(prev => {
+                // Deduplicate by ID if possible, or just prepend
+                const newT = lastMessage.data;
+                // Optional: Check if already exists (for slow networks/reconnects)
+                if (prev.some(t => t.id === newT.id)) return prev;
+                return [newT, ...prev].slice(0, 50);
+            });
+        }
+    }, [lastMessage]);
 
     const handleStartSlot = async (id, config) => {
         try {

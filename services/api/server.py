@@ -9,7 +9,14 @@ import time
 import logging
 from typing import List, Optional
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Query, Request, Depends
+from fastapi import FastAPI, HTTPException, Query, Request, Depends, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import asyncio
+import redis
+import json
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +45,31 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# --- WebSocket Manager ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                logger.error(f"Error broadcasting to {connection}: {e}")
+                # Remove dead connection?
+                pass
+
+manager = ConnectionManager()
+# -------------------------
 
 app = FastAPI(
     title="ARIS API",
@@ -97,6 +129,167 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
     
     if credentials.credentials != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+# --- Helper for Slot Status ---
+def get_current_slots_status():
+    """Helper to get current status of all slots from Redis"""
+    try:
+        keys = redis_client.keys('slot:*:activity')
+        active_map = {}
+        for k in keys:
+            try:
+                val = redis_client.get(k)
+                if val:
+                    data = json.loads(val)
+                    slot_id = int(k.decode('utf-8').split(':')[1])
+                    active_map[slot_id] = data
+            except: 
+                pass
+        
+        slots_list = []
+        for i in range(1, 5):
+            activity = active_map.get(i)
+            is_active = False
+            if activity and (time.time() - activity['last_seen'] < 15.0):
+                is_active = True
+            
+            slots_list.append({
+                "id": i,
+                "status": "online" if is_active else "offline",
+                "frequency_hz": activity['frequency_hz'] if activity else 0,
+                "mode": activity['mode'] if activity else "",
+                "host": activity.get('host') if activity else None,
+                "port": activity.get('port') if activity else None
+            })
+        return slots_list
+    except Exception as e:
+        logger.error(f"Error getting slot status: {e}")
+        return []
+
+# --- WebSocket Endpoint ---
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        # Send initial state
+        initial_slots = get_current_slots_status()
+        await websocket.send_text(json.dumps({
+            "type": "SLOT_UPDATE",
+            "data": initial_slots
+        }))
+
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WS Error: {e}")
+        manager.disconnect(websocket)
+
+# --- Background Broadcaster ---
+async def broadcast_background_task():
+    """
+    Background task to:
+    1. Check slot status changes
+    2. Read new items from streams (Transcript, QSO, Callsign) -> Broadcast
+    """
+    await asyncio.sleep(5)  # Wait for startup
+    logger.info("Starting WS Broadcast Task")
+    
+    last_ids = {
+        STREAM_TRANSCRIPTS: '$',
+        STREAM_QSOS: '$',
+        STREAM_CALLSIGNS: '$'
+    }
+    
+    # Track previous slot states to only broadcast changes
+    prev_slots = []
+    
+    while True:
+        try:
+            # 1. Check Slots (Status polling)
+            # Re-use logic from get_slots basically
+            # We need to run DB/Redis calls in executor if they block? 
+            # Ideally yes, but redis-py is fast.
+            # Let's perform a lightweight check.
+            
+            # NOTE: We can't easily reuse 'get_slots' as it is async but uses blocking DB calls inside?
+            # Actually get_slots is defined as `async def` but uses `SessionLocal()` which is sync.
+            # FastAPI runs `async def` in the main loop! If it has blocking calls, it blocks loop!
+            # Wait, `get_slots` uses `SessionLocal` (SQLAlchemy). That IS blocking.
+            # If `get_slots` is `async def`, FastAPI does NOT run it in threadpool. It runs in loop.
+            # This means `get_slots` is BLOCKING the loop. That is a pre-existing issue.
+            # We should probably fix that, but for now I'll use run_in_executor here.
+            
+            # 1. Check Slots (Status polling)
+            # Run in executor to avoid blocking loop
+            loop = asyncio.get_event_loop()
+            current_slots = await loop.run_in_executor(None, get_current_slots_status)
+
+            # Check for diff
+            if json.dumps(current_slots, sort_keys=True) != json.dumps(prev_slots, sort_keys=True):
+                await manager.broadcast(json.dumps({
+                    "type": "SLOT_UPDATE",
+                    "data": current_slots
+                }))
+                prev_slots = current_slots
+
+            # 2. Check Streams
+            # Use xread with small timeout (non-blocking basically)
+            # But xread is blocking IO. Must run in executor.
+            loop = asyncio.get_event_loop()
+            messages = await loop.run_in_executor(
+                None, 
+                lambda: redis_client.xread(last_ids, count=10, block=100)
+            )
+            
+            if messages:
+                for stream, msg_list in messages:
+                    stream = stream.decode('utf-8') if isinstance(stream, bytes) else stream
+                    # Update last_id
+                    last_ids[stream] = msg_list[-1][0]
+                    
+                    for msg_id, msg_data in msg_list:
+                        # Decode and broadcast
+                        # We send raw dict, frontend parses
+                        # Convert bytes in dict to strings
+                        clean_data = {}
+                        for k, v in msg_data.items():
+                            k_s = k.decode('utf-8') if isinstance(k, bytes) else k
+                            v_s = v.decode('utf-8') if isinstance(v, bytes) else v
+                            try:
+                                # Try to json decode if it's a JSON string (like 'callsigns' list?)
+                                # Actually models store fields as simple strings usually.
+                                # But let's check Transcript model. Text is string.
+                                pass
+                            except: pass
+                            clean_data[k_s] = v_s
+                        
+                        # Type mapping
+                        msg_type = "UNKNOWN"
+                        if stream == STREAM_TRANSCRIPTS: msg_type = "TRANSCRIPT"
+                        elif stream == STREAM_QSOS: msg_type = "QSO"
+                        elif stream == STREAM_CALLSIGNS: msg_type = "CALLSIGN"
+                        
+                        await manager.broadcast(json.dumps({
+                            "type": msg_type,
+                            "data": clean_data
+                        }))
+
+            await asyncio.sleep(0.5) # Poll interval
+            
+        except Exception as e:
+            logger.error(f"Broadcast Loop Error: {e}")
+            await asyncio.sleep(5)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(broadcast_background_task())
+
+# ------------------------------
+
     
     return True
 
@@ -1068,6 +1261,39 @@ async def get_qso_detail(session_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting QSO detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.delete("/api/qsos/{session_id}")
+async def delete_qso(session_id: str):
+    """Delete a QSO and its associated transcripts"""
+    session = SessionLocal()
+    try:
+        qso = session.query(QSOModel).filter(QSOModel.session_id == session_id).first()
+        if not qso:
+            raise HTTPException(status_code=404, detail="QSO not found")
+            
+        # Delete associated transcripts
+        buffer_sec = 2.0
+        end_time = qso.end_time if qso.end_time else time.time()
+        
+        session.query(TranscriptModel).filter(
+            TranscriptModel.frequency_hz == qso.frequency_hz,
+            TranscriptModel.timestamp >= qso.start_time - buffer_sec,
+            TranscriptModel.timestamp <= end_time + buffer_sec
+        ).delete(synchronize_session=False)
+
+        # Delete QSO
+        session.delete(qso)
+        session.commit()
+        
+        return {"message": "QSO deleted successfully"}
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error deleting QSO: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

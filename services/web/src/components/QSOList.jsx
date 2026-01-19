@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Database } from 'lucide-react';
+import { Database, Trash2 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:8000`;
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const QSOList = () => {
     const [qsos, setQsos] = useState([]);
@@ -42,6 +42,27 @@ const QSOList = () => {
         }
     };
 
+    const handleDelete = async (e, sessionId) => {
+        e.stopPropagation();
+        if (!window.confirm("Delete this record permanently?")) return;
+
+        try {
+            const res = await fetch(`${API_BASE}/api/qsos/${sessionId}`, { method: 'DELETE' });
+            if (res.ok) {
+                setQsos(prev => prev.filter(q => q.session_id !== sessionId));
+                if (selectedQSO && selectedQSO.session_id === sessionId) {
+                    setSelectedQSO(null);
+                }
+            } else {
+                console.error("Delete failed");
+                alert("Failed to delete record");
+            }
+        } catch (err) {
+            console.error("Delete error:", err);
+            alert("Error deleting record");
+        }
+    };
+
     return (
         <div className="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
             <div className="panel-header">
@@ -79,6 +100,7 @@ const QSOList = () => {
                                 <th style={{ padding: '8px' }}>MODE</th>
                                 <th style={{ padding: '8px' }}>CALLSIGNS</th>
                                 <th style={{ padding: '8px' }}>SUMMARY</th>
+                                <th style={{ padding: '8px', width: '40px' }}></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -116,6 +138,23 @@ const QSOList = () => {
                                     </td>
                                     <td style={{ padding: '8px', color: '#888', maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                         {q.summary || 'No summary'}
+                                    </td>
+                                    <td style={{ padding: '8px', textAlign: 'center' }}>
+                                        <button
+                                            onClick={(e) => handleDelete(e, q.session_id)}
+                                            style={{
+                                                background: 'none',
+                                                border: 'none',
+                                                color: '#666',
+                                                cursor: 'pointer',
+                                                padding: '4px'
+                                            }}
+                                            onMouseEnter={(e) => e.target.style.color = '#f44'}
+                                            onMouseLeave={(e) => e.target.style.color = '#666'}
+                                            title="Delete Log"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
                                     </td>
                                 </tr>
                             ))}

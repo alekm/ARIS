@@ -56,6 +56,9 @@ class CaptureThread(threading.Thread):
     async def _lifecycle(self):
         while self.running:
             try:
+                # Update Heartbeat immediately
+                self._update_heartbeat()
+                
                 # Initialize Client
                 self.client = KiwiSDRClient(
                     host=self.config['host'],
@@ -64,6 +67,9 @@ class CaptureThread(threading.Thread):
                     frequency_hz=self.config['frequency_hz'],
                     mode=self.config['mode']
                 )
+                
+                # Start Heartbeat
+                last_heartbeat = 0
                 
                 # Attach Audio Callback
                 self.client.on_audio_data = self._handle_audio
@@ -118,8 +124,32 @@ class CaptureThread(threading.Thread):
             
             self.redis.xadd(STREAM_AUDIO, payload, maxlen=1000)
             
+            # Update heartbeat on audio activity too (at most once per sec)
+            self._update_heartbeat()
+            
         except Exception as e:
             logger.error(f"Slot-{self.slot_id} - Audio Publish Error: {e}", exc_info=True)
+
+    def _update_heartbeat(self):
+        """Update Redis with current status"""
+        try:
+            # Rate limit to 1s
+            now = time.time()
+            if hasattr(self, '_last_hb') and now - self._last_hb < 1.0:
+                return
+            self._last_hb = now
+            
+            key = f"slot:{self.slot_id}:activity"
+            data = {
+                "frequency_hz": self.config['frequency_hz'],
+                "mode": self.config.get('mode', 'USB'),
+                "host": self.config.get('host'),
+                "port": self.config.get('port'),
+                "last_seen": now
+            }
+            self.redis.set(key, json.dumps(data), ex=30)
+        except Exception as e:
+            logger.error(f"Slot-{self.slot_id} - Heartbeat Error: {e}")
 
     def stop(self):
         self.running = False
@@ -175,7 +205,7 @@ class SlotManager:
             logger.warning("KIWI_HOST not set, cannot auto-start")
             return
         
-        # Auto-start slot 0
+        # Auto-start slot 1 (Matches UI/Server indexing 1-4)
         config = {
             'host': host,
             'port': port,
@@ -184,8 +214,8 @@ class SlotManager:
             'mode': demod_mode
         }
         
-        logger.info(f"Auto-starting slot 0 from environment: {host}:{port}, {frequency_hz} Hz, {demod_mode}")
-        self.start_slot('0', config)
+        logger.info(f"Auto-starting slot 1 from environment: {host}:{port}, {frequency_hz} Hz, {demod_mode}")
+        self.start_slot('1', config)
 
     def handle_command(self, data):
         cmd = data.get('command')
