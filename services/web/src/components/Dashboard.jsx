@@ -31,6 +31,43 @@ const Dashboard = () => {
         fetchHistory();
     }, []);
 
+    // Periodic refresh to sync IDs for WebSocket transcripts that have been persisted
+    useEffect(() => {
+        const syncIds = async () => {
+            try {
+                const res = await fetch(`${API_BASE}/api/transcripts?limit=50`);
+                if (res.ok) {
+                    const apiTranscripts = await res.json();
+                    setTranscripts(prev => {
+                        // Merge API transcripts (with IDs) with WebSocket transcripts (may not have IDs yet)
+                        // Match by timestamp + text to update IDs
+                        const merged = prev.map(wsT => {
+                            // If already has ID, keep it
+                            if (wsT.id) return wsT;
+                            
+                            // Try to find matching transcript in API results
+                            const apiMatch = apiTranscripts.find(apiT => 
+                                Math.abs(apiT.timestamp - wsT.timestamp) < 0.1 && 
+                                apiT.text === wsT.text
+                            );
+                            if (apiMatch && apiMatch.id) {
+                                return { ...wsT, id: apiMatch.id };
+                            }
+                            return wsT;
+                        });
+                        return merged;
+                    });
+                }
+            } catch (e) {
+                console.warn("Failed to sync transcript IDs:", e);
+            }
+        };
+        
+        // Sync IDs every 3 seconds to catch newly persisted transcripts
+        const interval = setInterval(syncIds, 3000);
+        return () => clearInterval(interval);
+    }, []);
+
     // Handle Real-time Slot Updates via WebSocket
     useEffect(() => {
         if (slotsData && slotsData.length > 0) {
