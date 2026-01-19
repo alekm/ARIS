@@ -146,19 +146,14 @@ class LLMSummarizer:
         
         context_type = "segment of a" if is_partial else ""
 
-        prompt = f"""You are analyzing amateur radio (ham radio) communications. Below is a transcript from a {context_type} QSO (conversation) or net.
+        prompt = f"""Summarize this amateur radio QSO transcript in 3-5 sentences. Write directly, without an introduction.
 
-Callsigns detected: {callsigns_str}
+Callsigns: {callsigns_str}
 
 Transcript:
 {full_text}
 
-Please provide a concise 2-3 sentence summary covering:
-1. Who was involved (callsigns)
-2. Main topics discussed
-3. Any notable information (signal reports, locations, weather, etc.)
-
-Keep it brief and factual."""
+Summary (3-5 sentences covering participants, main topics, and notable details like signal reports or locations):"""
 
         return self._call_llm(prompt)
 
@@ -168,39 +163,60 @@ Keep it brief and factual."""
         combined_summaries = "\n\n".join(summaries)
         callsigns_str = ", ".join(callsigns)
 
-        prompt = f"""You are analyzing a long amateur radio (ham radio) session. Below are chronological summaries of different parts of the conversation.
+        prompt = f"""Synthesize these partial summaries into a single 4-6 sentence summary of the entire amateur radio session. Write directly without an introduction.
 
-Callsigns involved: {callsigns_str}
+Callsigns: {callsigns_str}
 
 Partial Summaries:
 {combined_summaries}
 
-Please create a single, consolidated Final Report (3-5 sentences) that synthesizes the entire session.
-- Identify the main participants.
-- Summarize the key discussion points for the whole session.
-- Note any specific operational details (bands, conditions, equipment) mentioned.
-"""
+Consolidated Summary (4-6 sentences covering main participants, key discussion points, and operational details):"""
         return self._call_llm(prompt)
 
     def _call_llm(self, prompt: str) -> str:
         """Helper to call the configured LLM backend"""
         try:
+            # Use system message to encourage direct, natural summaries
+            system_msg = "You are a concise technical writer. Write summaries directly without introductions or meta-commentary."
+            
             if self.backend == 'ollama':
                 response = ollama.chat(
                     model=self.model,
-                    messages=[{'role': 'user', 'content': prompt}],
+                    messages=[
+                        {'role': 'system', 'content': system_msg},
+                        {'role': 'user', 'content': prompt}
+                    ],
                     options={'temperature': 0.3}
                 )
-                return response['message']['content'].strip()
+                result = response['message']['content'].strip()
             elif self.backend == 'openai':
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages=[{'role': 'user', 'content': prompt}],
+                    messages=[
+                        {'role': 'system', 'content': system_msg},
+                        {'role': 'user', 'content': prompt}
+                    ],
                     temperature=0.3
                 )
-                return response.choices[0].message.content.strip()
+                result = response.choices[0].message.content.strip()
             else:
                 return f"Summary not available (unknown backend: {self.backend})"
+            
+            # Post-process: Remove common boilerplate prefixes
+            boilerplate_prefixes = [
+                "Here's a summary",
+                "Here is a summary",
+                "Summary:",
+                "The summary is:",
+                "This is a summary"
+            ]
+            for prefix in boilerplate_prefixes:
+                if result.startswith(prefix):
+                    # Remove prefix and any following punctuation/whitespace
+                    result = result[len(prefix):].lstrip(' :\n-')
+                    break
+            
+            return result
 
         except Exception as e:
             logger.error(f"LLM summarization failed: {e}")
