@@ -1,6 +1,9 @@
 # Environment
 .env
 *.env.local
+*.backup
+*.fixed
+*.orig
 
 # Data
 data/audio/*
