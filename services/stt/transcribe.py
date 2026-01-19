@@ -13,6 +13,7 @@ import redis
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from faster_whisper import WhisperModel
+from scipy import signal as scipy_signal
 
 sys.path.insert(0, '/app')
 from shared.models import AudioChunk, Transcript, STREAM_AUDIO, STREAM_TRANSCRIPTS, RedisMessage
@@ -83,9 +84,19 @@ class STTService:
             logger.info(f"Consumer group already exists: {self.consumer_group}")
 
     def bytes_to_float32(self, audio_bytes, sample_rate):
-        """Convert int16 PCM bytes to float32 numpy array"""
+        """Convert int16 PCM bytes to float32 numpy array, resampling to 16kHz if needed"""
         pcm = np.frombuffer(audio_bytes, dtype=np.int16)
         float_audio = pcm.astype(np.float32) / 32768.0
+        
+        # Whisper expects 16kHz, resample if needed
+        target_rate = 16000
+        if sample_rate != target_rate:
+            # Calculate resampling ratio
+            num_samples = int(len(float_audio) * target_rate / sample_rate)
+            # Use scipy's resample for high-quality resampling
+            float_audio = scipy_signal.resample(float_audio, num_samples)
+            logger.debug(f"Resampled audio from {sample_rate}Hz to {target_rate}Hz ({len(pcm)} -> {num_samples} samples)")
+        
         return float_audio
 
     def detect_speech(self, audio_float):
@@ -106,6 +117,9 @@ class STTService:
         logger.info(f"[Slot {state.source_id}] Transcribing {state.buffer_duration_ms}ms ({len(audio_data)} samples)")
 
         try:
+            # Whisper expects 16kHz audio
+            # Audio should already be resampled to 16kHz in bytes_to_float32()
+            # faster-whisper auto-detects sample rate from the audio data
             segments, info = self.model.transcribe(
                 audio_data,
                 language="en",
@@ -118,6 +132,7 @@ class STTService:
             for segment in segments:
                 full_text += segment.text + " "
             full_text = full_text.strip()
+            logger.info(f"[Slot {state.source_id}] RAW WHISPER OUTPUT: '{full_text}'")
 
             if full_text:
                 if self.is_hallucination(full_text):
@@ -232,6 +247,26 @@ class STTService:
         last_id = '>'
 
         try:
+            # First, process any pending messages (PEL)
+            pending_id = '0'
+            logger.info("Checking for pending messages...")
+            while self.running:
+                messages = self.redis.xreadgroup(
+                    self.consumer_group, self.consumer_name,
+                    {STREAM_AUDIO: pending_id}, count=20, block=None
+                )
+                
+                if not messages or not messages[0][1]:
+                    break # No more pending messages
+
+                for stream, stream_messages in messages:
+                    for msg_id, msg_data in stream_messages:
+                        self.process_chunk(msg_data)
+                        self.redis.xack(STREAM_AUDIO, self.consumer_group, msg_id)
+            
+            logger.info("Processed all pending messages. Listening for new data...")
+
+            # Now listen for new messages
             while self.running:
                 messages = self.redis.xreadgroup(
                     self.consumer_group, self.consumer_name,
