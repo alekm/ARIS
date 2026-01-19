@@ -27,16 +27,11 @@ services:
     volumes:
       - ./data/audio:/data/audio
       - ./services/audio-capture/config.yaml:/app/config.yaml
+      - ./services/audio-capture:/app
+      - ./shared:/app/shared
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - MODE=${MODE:-kiwi} # mock or kiwi
-      - KIWI_HOST=${KIWI_HOST:-172.16.250.99}
-      - KIWI_PORT=${KIWI_PORT:-8073}
-      - KIWI_PASSWORD=${KIWI_PASSWORD:-}
-      - FREQUENCY_HZ=${FREQUENCY_HZ:-7188000}
-      - DEMOD_MODE=${DEMOD_MODE:-LSB}
-      - DEBUG_KIWI=${DEBUG_KIWI:-false}
     restart: unless-stopped
   stt:
     container_name: aris-stt
@@ -96,6 +91,21 @@ services:
       - LLM_API_KEY=${LLM_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+  web:
+    container_name: aris-web
+    build:
+      context: ./services/web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:5173"
+    volumes:
+      - ./services/web:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true # Ensure file changes are detected
+    depends_on:
+      - api
     restart: unless-stopped
   api:
     container_name: aris-api

@@ -64,7 +64,17 @@ class QSOModel(Base):
     # Storing lists as JSON-like strings or referenced tables is better, but for simplicity:
     callsigns_list = Column(Text) # Comma separated
     transcript_ids_list = Column(Text) # Comma separated IDs (optional reference)
+    transcript_ids_list = Column(Text) # Comma separated IDs (optional reference)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class SlotModel(Base):
+    """DB model for Receiver Slot Configuration"""
+    __tablename__ = 'slots'
+
+    id = Column(Integer, primary_key=True, autoincrement=False) # 1-4 determined by user/system
+    enabled = Column(Boolean, default=False)
+    config_json = Column(Text) # JSON string of full configuration
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 def init_db(database_url):
     """Initialize database and create tables"""

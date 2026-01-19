@@ -1,0 +1,131 @@
+:root {
+  --bg-dark: #1a1a1a;
+  --bg-panel: #222222;
+  --bg-header: #000000;
+
+  --color-primary: #00ff00;
+  --color-dim: #00aa00;
+  --color-alert: #ff0000;
+  --color-text: #e0e0e0;
+  --color-text-dim: #888888;
+
+  --border-color: #333333;
+
+  --font-mono: 'Courier New', 'Courier', monospace;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-dark);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  overflow: hidden;
+}
+
+/* Utility Classes */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid #444;
+  /* Stronger border */
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px #000;
+  /* Double border effect */
+}
+
+.panel-header {
+  background: #111;
+  border-bottom: 1px solid #444;
+  padding: 8px 12px;
+  font-weight: bold;
+  color: var(--color-primary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.9em;
+  letter-spacing: 1px;
+}
+
+.btn {
+  background: #222;
+  border: 1px solid #555;
+  color: #ccc;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 0.85em;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+.btn:hover {
+  background: #333;
+  color: #fff;
+  border-color: #777;
+}
+
+/* Connect Button (Primary) */
+.btn-primary {
+  background: rgba(0, 50, 0, 0.3);
+  color: #00ff00;
+  border-color: #008800;
+}
+
+.btn-primary:hover {
+  background: #00ff00;
+  color: #000;
+  border-color: #00ff00;
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.4);
+}
+
+/* Disconnect Button (Danger) - Indicates Active State */
+.btn-danger {
+  background: rgba(50, 0, 0, 0.3);
+  color: #ff4444;
+  border-color: #880000;
+}
+
+.btn-danger:hover {
+  background: #ff0000;
+  color: #000;
+  border-color: #ff0000;
+  box-shadow: 0 0 8px rgba(255, 0, 0, 0.4);
+}
+
+.input {
+  background: #0a0a0a;
+  border: 1px solid #333;
+  color: #00ff00;
+  font-family: var(--font-mono);
+  padding: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
+
+.grid-label {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--color-text-dim);
+  margin-bottom: 4px;
+}

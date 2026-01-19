@@ -16,12 +16,14 @@ class AudioChunk:
     sample_rate: int
     duration_ms: int
     data: bytes  # PCM audio data
+    source_id: str = "default"  # Source identifier (e.g. "kiwi1")
     s_meter: float = 0.0  # S-meter reading (0.0 to 9.9)
     signal_strength_db: float = -150.0  # Signal strength in dB
     squelch_open: bool = True  # Whether squelch threshold was met
     rssi: Optional[float] = None  # RSSI from KiwiSDR if available
     low_cut: Optional[int] = None  # Filter low cutoff in Hz
     high_cut: Optional[int] = None  # Filter high cutoff in Hz
+    seq: Optional[int] = None  # Sequence number
 
     def to_dict(self):
         d = asdict(self)
@@ -40,6 +42,7 @@ class AudioChunk:
         d['sample_rate'] = int(d['sample_rate']) if isinstance(d['sample_rate'], str) else d['sample_rate']
         d['duration_ms'] = int(d['duration_ms']) if isinstance(d['duration_ms'], str) else d['duration_ms']
         # Optional fields with defaults
+        d['source_id'] = str(d.get('source_id', 'default'))
         d['s_meter'] = float(d.get('s_meter', 0.0)) if isinstance(d.get('s_meter'), str) else d.get('s_meter', 0.0)
         d['signal_strength_db'] = float(d.get('signal_strength_db', -150.0)) if isinstance(d.get('signal_strength_db'), str) else d.get('signal_strength_db', -150.0)
         d['squelch_open'] = d.get('squelch_open', True) if not isinstance(d.get('squelch_open'), str) else d.get('squelch_open', 'true').lower() == 'true'
@@ -54,6 +57,8 @@ class AudioChunk:
         d['low_cut'] = int(low_cut_val) if low_cut_val is not None and isinstance(low_cut_val, str) and low_cut_val.strip() else low_cut_val
         high_cut_val = d.get('high_cut')
         d['high_cut'] = int(high_cut_val) if high_cut_val is not None and isinstance(high_cut_val, str) and high_cut_val.strip() else high_cut_val
+        seq_val = d.get('seq')
+        d['seq'] = int(seq_val) if seq_val is not None and isinstance(seq_val, str) else seq_val
         return cls(**d)
 
 
@@ -66,6 +71,7 @@ class Transcript:
     text: str
     confidence: float
     duration_ms: int
+    source_id: str = "default"  # Source identifier
     language: str = "en"
 
     def to_dict(self):
@@ -78,6 +84,7 @@ class Transcript:
         d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
         d['confidence'] = float(d['confidence']) if isinstance(d['confidence'], str) else d['confidence']
         d['duration_ms'] = int(d['duration_ms']) if isinstance(d['duration_ms'], str) else d['duration_ms']
+        d['source_id'] = str(d.get('source_id', 'default'))
         return cls(**d)
 
 
@@ -89,6 +96,7 @@ class Callsign:
     frequency_hz: int
     confidence: float
     context: str  # Surrounding text
+    source_id: str = "default"  # Source identifier
 
     def to_dict(self):
         return asdict(self)
@@ -99,6 +107,7 @@ class Callsign:
         d['timestamp'] = float(d['timestamp']) if isinstance(d['timestamp'], str) else d['timestamp']
         d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
         d['confidence'] = float(d['confidence']) if isinstance(d['confidence'], str) else d['confidence']
+        d['source_id'] = str(d.get('source_id', 'default'))
         return cls(**d)
 
 
@@ -112,6 +121,7 @@ class QSO:
     mode: str
     callsigns: List[str]
     transcript_ids: List[int]
+    source_id: str = "default"  # Source identifier
     summary: Optional[str] = None
 
     def to_dict(self):
@@ -124,6 +134,7 @@ class QSO:
         if d.get('end_time') is not None:
             d['end_time'] = float(d['end_time']) if isinstance(d['end_time'], str) else d['end_time']
         d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
+        d['source_id'] = str(d.get('source_id', 'default'))
         # Convert transcript_ids if they're strings
         if 'transcript_ids' in d and d['transcript_ids']:
             if isinstance(d['transcript_ids'], list) and len(d['transcript_ids']) > 0:

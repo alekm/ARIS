@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Speech-to-Text Service
-Uses faster-whisper to transcribe audio chunks from Redis stream
+Uses faster-whisper to transcribe audio chunks from Redis stream.
+Supports multiple concurrent audio sources (slots) via source_id tagging.
 """
 import os
 import sys
@@ -9,6 +10,8 @@ import time
 import logging
 import numpy as np
 import redis
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional
 from faster_whisper import WhisperModel
 
 sys.path.insert(0, '/app')
@@ -20,6 +23,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@dataclass
+class SlotState:
+    """State for a single audio source slot"""
+    source_id: str
+    audio_buffer: List[np.ndarray] = field(default_factory=list)
+    buffer_duration_ms: int = 0
+    in_speech: bool = False
+    silence_chunks_count: int = 0
+    silence_chunks_needed: int = 0
+    last_chunk_info: Dict = field(default_factory=dict)
 
 class STTService:
     """Speech-to-Text service using faster-whisper"""
@@ -48,25 +61,17 @@ class STTService:
 
         # VAD parameters
         self.vad_threshold = float(os.getenv('VAD_THRESHOLD', '0.5'))
-
-        # Energy-based speech detection parameters
-        self.energy_threshold = float(os.getenv('ENERGY_THRESHOLD', '0.01'))  # RMS energy threshold
-        self.silence_duration_ms = int(os.getenv('SILENCE_DURATION_MS', '2000'))  # 2 seconds of silence triggers transcription
-
-        # Speech state tracking
-        self.in_speech = False
-        self.silence_chunks_count = 0
-        self.silence_chunks_needed = 0  # Calculated from silence_duration_ms
-
-        # Buffer for accumulating audio
-        self.audio_buffer = []
-        self.buffer_duration_ms = 0
-        self.max_buffer_ms = int(os.getenv('MAX_BUFFER_MS', '30000'))  # 30 seconds max
-        self.min_buffer_ms = int(os.getenv('MIN_BUFFER_MS', '1000'))  # 1 second min
+        self.energy_threshold = float(os.getenv('ENERGY_THRESHOLD', '0.01'))
+        self.silence_duration_ms = int(os.getenv('SILENCE_DURATION_MS', '2000'))
+        self.max_buffer_ms = int(os.getenv('MAX_BUFFER_MS', '30000'))
+        self.min_buffer_ms = int(os.getenv('MIN_BUFFER_MS', '1000'))
 
         self.running = False
         self.consumer_group = 'stt-service'
         self.consumer_name = f'stt-{os.getpid()}'
+        
+        # State per slot
+        self.slots: Dict[str, SlotState] = {}
 
         # Create consumer group if it doesn't exist
         try:
@@ -87,22 +92,20 @@ class STTService:
         """Detect if audio chunk contains speech using RMS energy"""
         rms = np.sqrt(np.mean(audio_float ** 2))
         has_speech = rms > self.energy_threshold
-        logger.debug(f"Audio RMS: {rms:.4f}, threshold: {self.energy_threshold:.4f}, speech: {has_speech}")
+        # logger.debug(f"Audio RMS: {rms:.4f}, threshold: {self.energy_threshold:.4f}, speech: {has_speech}")
         return has_speech
 
-    def transcribe_buffer(self):
-        """Transcribe accumulated audio buffer"""
-        if self.buffer_duration_ms < self.min_buffer_ms:
-            logger.debug(f"Buffer too short: {self.buffer_duration_ms}ms")
+    def transcribe_buffer(self, state: SlotState):
+        """Transcribe accumulated audio buffer for a slot"""
+        if state.buffer_duration_ms < self.min_buffer_ms:
             return None
 
         # Concatenate all chunks
-        audio_data = np.concatenate(self.audio_buffer)
+        audio_data = np.concatenate(state.audio_buffer)
 
-        logger.info(f"Transcribing {self.buffer_duration_ms}ms of audio ({len(audio_data)} samples)")
+        logger.info(f"[Slot {state.source_id}] Transcribing {state.buffer_duration_ms}ms ({len(audio_data)} samples)")
 
         try:
-            # Transcribe
             segments, info = self.model.transcribe(
                 audio_data,
                 language="en",
@@ -111,184 +114,138 @@ class STTService:
                 beam_size=5
             )
 
-            # Collect all segments
             full_text = ""
-            segment_count = 0
             for segment in segments:
                 full_text += segment.text + " "
-                segment_count += 1
-
             full_text = full_text.strip()
 
             if full_text:
                 if self.is_hallucination(full_text):
                     return None
                     
-                logger.info(f"Transcribed ({segment_count} segments): {full_text[:100]}...")
+                logger.info(f"[Slot {state.source_id}] Transcribed: {full_text[:100]}...")
                 return full_text, info.language_probability
             else:
-                logger.debug("No speech detected in buffer")
                 return None
 
         except Exception as e:
-            logger.error(f"Transcription error: {e}")
+            logger.error(f"[Slot {state.source_id}] Transcription error: {e}")
             return None
 
     def is_hallucination(self, text):
-        """Check if text is a known Whisper hallucination"""
-        hallucinations = [
-            "Thanks for watching",
-            "Thank you for watching",
-            "subscribe",
-            "like and subscribe",
-            "MBC",
-            "www.",
-            ".com",
-            "Amara.org"
-        ]
-        
+        hallucinations = ["Thanks for watching", "subscribe", "MBC", "www.", ".com", "Amara.org"]
         text_lower = text.lower()
-        
-        # Check for exact matches or strong partial matches
         for h in hallucinations:
-            if h.lower() in text_lower:
-                logger.info(f"Filtered hallucination: '{text}' (matches '{h}')")
-                return True
-                
-        # Check for repetition (e.g. "Bye Bye Bye Bye")
-        if len(text) > 10 and len(set(text.split())) < 3:
-             logger.info(f"Filtered repetitive hallucination: '{text}'")
-             return True
-             
+            if h.lower() in text_lower: return True
         return False
 
-    def publish_transcript(self, text, confidence, chunk_info):
-        """Publish transcript to Redis stream"""
+    def publish_transcript(self, text, confidence, chunk_info, source_id):
+        """Publish transcript to Redis stream with source_id"""
         transcript = Transcript(
             timestamp=time.time(),
             frequency_hz=chunk_info['frequency_hz'],
             mode=chunk_info['mode'],
             text=text,
             confidence=confidence,
-            duration_ms=self.buffer_duration_ms,
+            duration_ms=chunk_info.get('duration_ms', 0), # This is kinda wrong, currently buffer duration isn't passed here
+            # But Transcript.duration_ms is used for display. 
+            # I should pass state.buffer_duration_ms.
+            source_id=source_id,
             language="en"
         )
+        # Fix: pass buffer duration
+        transcript.duration_ms = chunk_info['buffer_duration_ms']
 
         msg = RedisMessage.encode(transcript)
         self.redis.xadd(STREAM_TRANSCRIPTS, msg, maxlen=10000)
-        logger.info(f"Published transcript: {text[:50]}...")
+        logger.info(f"[Slot {source_id}] Published transcript")
 
     def process_chunk(self, chunk_data):
         """Process a single audio chunk with VAD-triggered transcription"""
         try:
-            # Debug: log what we receive
-            logger.debug(f"Received chunk_data keys: {list(chunk_data.keys()) if isinstance(chunk_data, dict) else 'not a dict'}")
             chunk = RedisMessage.decode(chunk_data, AudioChunk)
+            source_id = chunk.source_id
+            
+            # Get or create state
+            if source_id not in self.slots:
+                self.slots[source_id] = SlotState(source_id=source_id)
+            state = self.slots[source_id]
 
-            # Convert to float32
             audio_float = self.bytes_to_float32(chunk.data, chunk.sample_rate)
 
-            # Calculate silence chunks needed (do this once on first chunk)
-            if self.silence_chunks_needed == 0 and chunk.duration_ms > 0:
-                self.silence_chunks_needed = max(1, self.silence_duration_ms // chunk.duration_ms)
-                logger.info(f"Silence detection: need {self.silence_chunks_needed} consecutive silent chunks ({self.silence_duration_ms}ms)")
+            # Silence calc init
+            if state.silence_chunks_needed == 0 and chunk.duration_ms > 0:
+                state.silence_chunks_needed = max(1, self.silence_duration_ms // chunk.duration_ms)
 
-            # Detect speech in this chunk
+            # Detect speech
             has_speech = self.detect_speech(audio_float)
 
             # Add to buffer
-            self.audio_buffer.append(audio_float)
-            self.buffer_duration_ms += chunk.duration_ms
-
-            # Store chunk info for transcript metadata
-            self.last_chunk_info = {
+            state.audio_buffer.append(audio_float)
+            state.buffer_duration_ms += chunk.duration_ms
+            
+            # Update info
+            state.last_chunk_info = {
                 'frequency_hz': chunk.frequency_hz,
-                'mode': chunk.mode
+                'mode': chunk.mode,
+                'buffer_duration_ms': state.buffer_duration_ms # For transcript duration
             }
 
-            # State machine for speech detection
             should_transcribe = False
             transcribe_reason = ""
 
             if has_speech:
-                # Speech detected - reset silence counter
-                if not self.in_speech:
-                    logger.info("Speech started")
-                    self.in_speech = True
-                self.silence_chunks_count = 0
+                if not state.in_speech:
+                    state.in_speech = True
+                state.silence_chunks_count = 0
             else:
-                # Silence detected
-                if self.in_speech:
-                    # We were in speech, now in silence
-                    self.silence_chunks_count += 1
-                    logger.debug(f"Silence chunk {self.silence_chunks_count}/{self.silence_chunks_needed}")
-
-                    if self.silence_chunks_count >= self.silence_chunks_needed:
-                        # Enough silence detected - speech has ended
-                        logger.info(f"Speech ended (silence detected for {self.silence_chunks_count * chunk.duration_ms}ms)")
+                if state.in_speech:
+                    state.silence_chunks_count += 1
+                    if state.silence_chunks_count >= state.silence_chunks_needed:
                         should_transcribe = True
                         transcribe_reason = "speech_ended"
-                        self.in_speech = False
-                        self.silence_chunks_count = 0
+                        state.in_speech = False
+                        state.silence_chunks_count = 0
 
-            # Safety fallback: transcribe if buffer is getting full
-            if self.buffer_duration_ms >= self.max_buffer_ms:
-                logger.info(f"Buffer full ({self.buffer_duration_ms}ms), forcing transcription")
+            if state.buffer_duration_ms >= self.max_buffer_ms:
                 should_transcribe = True
                 transcribe_reason = "buffer_full"
-                self.in_speech = False  # Reset state
-                self.silence_chunks_count = 0
+                state.in_speech = False
+                state.silence_chunks_count = 0
 
-            # Transcribe if triggered
             if should_transcribe:
-                logger.info(f"Transcribing buffer (reason: {transcribe_reason})")
-                result = self.transcribe_buffer()
+                result = self.transcribe_buffer(state)
                 if result:
                     text, confidence = result
-                    self.publish_transcript(text, confidence, self.last_chunk_info)
+                    self.publish_transcript(text, confidence, state.last_chunk_info, source_id)
 
                 # Clear buffer
-                self.audio_buffer = []
-                self.buffer_duration_ms = 0
+                state.audio_buffer = []
+                state.buffer_duration_ms = 0
 
         except Exception as e:
             logger.error(f"Error processing chunk: {e}", exc_info=True)
 
     def run(self):
-        """Main processing loop"""
         self.running = True
-        logger.info("Starting STT service...")
-
-        last_id = '>'  # Read only new messages
+        logger.info("Starting STT Multi-Slot Service...")
+        last_id = '>'
 
         try:
             while self.running:
-                # Read from stream
                 messages = self.redis.xreadgroup(
-                    self.consumer_group,
-                    self.consumer_name,
-                    {STREAM_AUDIO: last_id},
-                    count=1,
-                    block=1000  # 1 second timeout
+                    self.consumer_group, self.consumer_name,
+                    {STREAM_AUDIO: last_id}, count=5, block=1000
                 )
 
-                if not messages:
-                    continue
+                if not messages: continue
 
                 for stream, stream_messages in messages:
                     for msg_id, msg_data in stream_messages:
                         self.process_chunk(msg_data)
-
-                        # Acknowledge message
                         self.redis.xack(STREAM_AUDIO, self.consumer_group, msg_id)
-
         except KeyboardInterrupt:
-            logger.info("Shutting down gracefully...")
             self.running = False
-
-    def stop(self):
-        self.running = False
-
 
 if __name__ == '__main__':
     service = STTService()
