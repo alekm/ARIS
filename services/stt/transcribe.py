@@ -183,6 +183,14 @@ class STTService:
         text_lower = text.lower()
         for h in hallucinations:
             if h.lower() in text_lower: return True
+            
+        # Check for single-word noise hallucinations (common in Whisper)
+        # Remove punctuation for the check
+        normalized = text.strip().lower().rstrip('.!?')
+        noise_words = ["you", "bye", "goodbye"]
+        if normalized in noise_words:
+            return True
+            
         return False
 
     def publish_transcript(self, text, confidence, chunk_info, source_id):
