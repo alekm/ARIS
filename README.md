@@ -132,48 +132,59 @@ docker compose down -v
 
 ### Environment Variables
 
-All configuration is now managed via environment variables in `.env`:
+Configuration is managed via environment variables in `.env`:
 
 - **API Configuration**: `API_PORT`, `API_HOST`
 - **Redis**: `REDIS_HOST`, `REDIS_PORT` (defaults work for Docker Compose)
-- **Audio Capture**: `MODE`, `KIWI_HOST`, `FREQUENCY_HZ`, `DEMOD_MODE`
-- **STT**: `MODEL_SIZE`, `DEVICE`, `VAD_THRESHOLD`
+- **Audio Capture**: Environment variables (`MODE`, `KIWI_HOST`, etc.) are optional and only used for backward compatibility auto-start of slot 0. **Slots are configured via the Web UI or API endpoints** (see below).
+- **STT**: `MODEL_SIZE`, `DEVICE`, `VAD_THRESHOLD`, `ENERGY_THRESHOLD`
 - **LLM**: `LLM_BACKEND`, `LLM_MODEL`, `LLM_HOST`, `LLM_API_KEY`
 - **Database**: `DATABASE_URL`
 - **Logging**: `LOG_LEVEL` (default: WARNING) - Controls log verbosity for all services (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
 See `.env.example` for all available options and defaults.
 
-### With Real KiwiSDR
+### Configuring KiwiSDR Slots
 
-1. Update `.env`:
+**Recommended: Use the Web UI**
+1. Start the services: `docker compose up -d`
+2. Open the Web UI: `http://localhost:8000`
+3. Use the Dashboard to configure and start slots via the UI
+
+**Alternative: Use the API**
+```bash
+# Start a slot via API
+curl -X POST http://localhost:8000/api/slots/1/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "kiwi",
+    "host": "your.kiwi.address",
+    "port": 8073,
+    "frequency_hz": 7200000,
+    "demod_mode": "USB",
+    "password": ""
+  }'
+```
+
+**Backward Compatibility: Environment Variables**
+For auto-start of slot 0, you can still set environment variables in `.env`:
 ```bash
 MODE=kiwi
 KIWI_HOST=<your-kiwi-ip>
-FREQUENCY_HZ=7200000  # Your target frequency
+FREQUENCY_HZ=7200000
+DEMOD_MODE=USB
 ```
-
-2. Update `services/audio-capture/config.yaml` with your settings
-
-3. Restart services:
-```bash
-docker compose restart audio-capture
-```
+Then restart: `docker compose restart audio-capture`
 
 ## Configuration
 
-### Audio Capture (`services/audio-capture/config.yaml`)
+### Audio Capture Slots
 
-```yaml
-# Mode: mock or kiwi
-mode: kiwi
+KiwiSDR slots are configured via the Web UI or API endpoints. The `services/audio-capture/config.yaml` file is no longer used for slot configuration. Slot configurations are stored in the database and persist across restarts.
 
-# KiwiSDR settings
-kiwi_host: 192.168.1.100
-frequency_hz: 7200000  # 40m band
-demod_mode: USB  # USB, LSB, AM, FM
-sample_rate: 16000
-```
+To configure slots:
+- **Web UI**: Use the Dashboard at `http://localhost:8000`
+- **API**: Use `POST /api/slots/{slot_id}/start` endpoint
 
 ### STT Settings (`.env`)
 
