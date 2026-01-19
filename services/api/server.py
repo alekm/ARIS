@@ -1280,6 +1280,35 @@ async def get_callsigns(
         session.close()
 
 
+@app.post("/api/qsos/{session_id}/regenerate", dependencies=[Depends(check_rate_limit)])
+async def regenerate_qso_summary(session_id: str):
+    """Regenerate summary for a QSO by sending command to summarizer service"""
+    session = SessionLocal()
+    try:
+        # Verify QSO exists
+        qso = session.query(QSOModel).filter(QSOModel.session_id == session_id).first()
+        if not qso:
+            raise HTTPException(status_code=404, detail="QSO not found")
+        
+        # Send control command to summarizer service via Redis
+        cmd = {
+            "command": "regenerate_qso",
+            "session_id": session_id
+        }
+        redis_client.xadd(STREAM_CONTROL, cmd)
+        logger.info(f"Sent regenerate command for QSO {session_id} to summarizer service")
+        
+        return {"status": "success", "message": "Regenerate command sent to summarizer service"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending regenerate command: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
 @app.get("/api/qsos", response_model=List[QSOResponse])
 async def get_qsos(
     limit: int = Query(default=20, le=100)

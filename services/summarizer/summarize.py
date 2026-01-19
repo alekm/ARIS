@@ -180,6 +180,10 @@ Consolidated Summary (4-6 sentences covering main participants, key discussion p
             system_msg = "You are a concise technical writer. Write summaries directly without introductions or meta-commentary."
             
             if self.backend == 'ollama':
+                # Set host for ollama client if not default
+                if self.host and self.host != 'localhost:11434':
+                    import os
+                    os.environ['OLLAMA_HOST'] = f"http://{self.host}"
                 response = ollama.chat(
                     model=self.model,
                     messages=[
@@ -297,7 +301,14 @@ class SummarizerService:
 
             command = command_dict.get('command', '')
 
-            if command == 'trigger_summarize':
+            if command == 'regenerate_qso':
+                session_id = command_dict.get('session_id')
+                if session_id:
+                    logger.info(f"Regenerate QSO command received for session {session_id}")
+                    self.regenerate_qso_from_db(session_id)
+                else:
+                    logger.warning("regenerate_qso command missing session_id")
+            elif command == 'trigger_summarize':
                 logger.info("Manual summarization trigger received")
                 # Summarize all active sessions immediately
                 for frequency_hz in list(self.session_manager.transcript_buffer.keys()):
@@ -309,6 +320,86 @@ class SummarizerService:
 
         except Exception as e:
             logger.error(f"Error processing control command: {e}", exc_info=True)
+
+    def regenerate_qso_from_db(self, session_id: str):
+        """Regenerate summary for an existing QSO from database"""
+        try:
+            # Import database models
+            from shared.db import init_db, QSOModel, TranscriptModel
+            import os
+            database_url = os.getenv('DATABASE_URL', 'sqlite:////data/db/aris.db')
+            SessionLocal = init_db(database_url)
+            session = SessionLocal()
+            
+            try:
+                # Get QSO from database
+                qso = session.query(QSOModel).filter(QSOModel.session_id == session_id).first()
+                if not qso:
+                    logger.error(f"QSO {session_id} not found in database")
+                    return
+                
+                # Get associated transcripts
+                buffer_sec = 2.0
+                end_time = qso.end_time if qso.end_time else time.time()
+                
+                transcripts_db = session.query(TranscriptModel).filter(
+                    TranscriptModel.frequency_hz == qso.frequency_hz,
+                    TranscriptModel.timestamp >= qso.start_time - buffer_sec,
+                    TranscriptModel.timestamp <= end_time + buffer_sec
+                ).order_by(TranscriptModel.timestamp.asc()).all()
+                
+                if not transcripts_db:
+                    logger.error(f"No transcripts found for QSO {session_id}")
+                    return
+                
+                # Convert to Transcript objects
+                transcripts = [
+                    Transcript(
+                        timestamp=t.timestamp,
+                        frequency_hz=t.frequency_hz,
+                        mode=t.mode,
+                        text=t.text,
+                        confidence=t.confidence,
+                        duration_ms=t.duration_ms,
+                        source_id=str(t.frequency_hz),
+                        language=t.language
+                    )
+                    for t in transcripts_db
+                ]
+                
+                # Get callsigns
+                callsigns_list = qso.callsigns_list.split(',') if qso.callsigns_list else []
+                callsigns = [c.strip() for c in callsigns_list if c.strip()]
+                
+                # Regenerate summary
+                logger.info(f"Regenerating summary for QSO {session_id} with {len(transcripts)} transcripts")
+                new_summary = self.summarizer.summarize_qso(transcripts, callsigns)
+                
+                # Update QSO in database
+                qso.summary = new_summary
+                session.commit()
+                
+                logger.info(f"Summary regenerated for QSO {session_id}: {new_summary[:100]}...")
+                
+                # Also publish updated QSO to Redis stream
+                updated_qso = QSO(
+                    session_id=qso.session_id,
+                    start_time=qso.start_time,
+                    end_time=qso.end_time,
+                    frequency_hz=qso.frequency_hz,
+                    mode=qso.mode,
+                    callsigns=callsigns,
+                    transcript_ids=[],
+                    summary=new_summary
+                )
+                msg = RedisMessage.encode(updated_qso)
+                self.redis.xadd(STREAM_QSOS, msg, maxlen=1000)
+                
+            finally:
+                session.close()
+                
+        except Exception as e:
+            logger.error(f"Error regenerating QSO from database: {e}", exc_info=True)
 
     def summarize_session(self, frequency_hz: int, mode: str):
         """Generate summary for a completed session"""

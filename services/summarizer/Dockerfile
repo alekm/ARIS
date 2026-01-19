@@ -6,6 +6,6 @@ COPY services/summarizer/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/summarizer/*.py /app/
-COPY shared/models.py /app/shared/
+COPY shared /app/shared/
 
 CMD ["python", "summarize.py"]

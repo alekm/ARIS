@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, Trash2 } from 'lucide-react';
+import { Database, Trash2, RefreshCw } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -61,6 +61,40 @@ const QSOList = () => {
             console.error("Delete error:", err);
             alert("Error deleting record");
         }
+    };
+
+    const handleRetrySummary = async (e, sessionId) => {
+        e.stopPropagation();
+        if (!window.confirm("Regenerate summary for this QSO?")) return;
+
+        try {
+            const res = await fetch(`${API_BASE}/api/qsos/${sessionId}/regenerate`, { method: 'POST' });
+            if (res.ok) {
+                const data = await res.json();
+                // Update the QSO in the list
+                setQsos(prev => prev.map(q => 
+                    q.session_id === sessionId 
+                        ? { ...q, summary: data.summary }
+                        : q
+                ));
+                // Update selected QSO if it's the same one
+                if (selectedQSO && selectedQSO.session_id === sessionId) {
+                    setSelectedQSO({ ...selectedQSO, summary: data.summary });
+                }
+                alert("Summary regenerated successfully");
+            } else {
+                const errorData = await res.json().catch(() => ({ detail: "Unknown error" }));
+                console.error("Regenerate failed:", errorData);
+                alert(`Failed to regenerate summary: ${errorData.detail || "Unknown error"}`);
+            }
+        } catch (err) {
+            console.error("Regenerate error:", err);
+            alert("Error regenerating summary");
+        }
+    };
+
+    const isSummaryFailed = (summary) => {
+        return summary && summary.includes("[Summary failed:");
     };
 
     return (
@@ -137,7 +171,30 @@ const QSOList = () => {
                                         {q.callsigns && q.callsigns.length > 0 ? q.callsigns.join(', ') : 'N/A'}
                                     </td>
                                     <td style={{ padding: '8px', color: '#888', maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                        {q.summary || 'No summary'}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span style={{ color: isSummaryFailed(q.summary) ? '#f44' : '#888' }}>
+                                                {q.summary || 'No summary'}
+                                            </span>
+                                            {isSummaryFailed(q.summary) && (
+                                                <button
+                                                    onClick={(e) => handleRetrySummary(e, q.session_id)}
+                                                    style={{
+                                                        background: 'none',
+                                                        border: 'none',
+                                                        color: 'var(--color-primary)',
+                                                        cursor: 'pointer',
+                                                        padding: '2px',
+                                                        display: 'flex',
+                                                        alignItems: 'center'
+                                                    }}
+                                                    onMouseEnter={(e) => e.target.style.color = '#0f0'}
+                                                    onMouseLeave={(e) => e.target.style.color = 'var(--color-primary)'}
+                                                    title="Retry Summary"
+                                                >
+                                                    <RefreshCw size={12} />
+                                                </button>
+                                            )}
+                                        </div>
                                     </td>
                                     <td style={{ padding: '8px', textAlign: 'center' }}>
                                         <button
@@ -228,13 +285,36 @@ const QSOList = () => {
                             </div>
 
                             <div style={{ marginBottom: '20px' }}>
-                                <div style={{ fontSize: '0.7em', color: '#666', marginBottom: '5px' }}>SUMMARY</div>
+                                <div style={{ fontSize: '0.7em', color: '#666', marginBottom: '5px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <span>SUMMARY</span>
+                                    {isSummaryFailed(selectedQSO.summary) && (
+                                        <button
+                                            onClick={() => handleRetrySummary({ stopPropagation: () => {} }, selectedQSO.session_id)}
+                                            style={{
+                                                background: 'var(--color-primary)',
+                                                border: 'none',
+                                                color: '#000',
+                                                cursor: 'pointer',
+                                                padding: '4px 8px',
+                                                fontSize: '0.8em',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '4px'
+                                            }}
+                                            onMouseEnter={(e) => e.target.style.opacity = '0.8'}
+                                            onMouseLeave={(e) => e.target.style.opacity = '1'}
+                                        >
+                                            <RefreshCw size={12} />
+                                            RETRY
+                                        </button>
+                                    )}
+                                </div>
                                 <div style={{
                                     backgroundColor: '#111',
                                     padding: '10px',
                                     border: '1px solid #333',
                                     lineHeight: '1.5',
-                                    color: '#ddd'
+                                    color: isSummaryFailed(selectedQSO.summary) ? '#f44' : '#ddd'
                                 }}>
                                     {selectedQSO.summary || 'No summary available.'}
                                 </div>

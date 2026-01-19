@@ -91,9 +91,11 @@ services:
         condition: service_healthy
     volumes:
       - ./data/summaries:/data/summaries
+      - ./data/db:/data/db
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////data/db/aris.db}
       - LLM_BACKEND=${LLM_BACKEND:-ollama} # ollama, llama-cpp, or openai-compatible
       - LLM_MODEL=${LLM_MODEL:-llama3.2:latest}
       - LLM_HOST=${LLM_HOST:-host.docker.internal:11434} # Adjust for your LLM server
