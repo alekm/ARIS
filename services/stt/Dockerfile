@@ -15,8 +15,10 @@ RUN ln -sf /usr/bin/python3 /usr/bin/python
 # Install Python dependencies
 # Note: --break-system-packages is needed for Ubuntu 24.04 (PEP 668), safe in containers
 # Skip pip upgrade since it's installed via apt and can't be upgraded with pip itself
+# Using BuildKit cache mount to speed up rebuilds
 COPY services/stt/requirements.txt .
-RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Verify numpy is installed
 RUN python3 -c "import numpy; print('NumPy version:', numpy.__version__)" || \

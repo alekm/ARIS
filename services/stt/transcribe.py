@@ -137,6 +137,11 @@ class STTService:
             logger.info(f"[Slot {state.source_id}] RAW WHISPER OUTPUT: '{full_text}'")
 
             if full_text:
+                # Filter out transcripts that are just punctuation/whitespace
+                if self.is_noise_or_punctuation_only(full_text):
+                    logger.info(f"[Slot {state.source_id}] Rejecting noise/punctuation-only transcript: '{full_text}'")
+                    return None
+                
                 if self.is_hallucination(full_text):
                     return None
                     
@@ -148,6 +153,30 @@ class STTService:
         except Exception as e:
             logger.error(f"[Slot {state.source_id}] Transcription error: {e}")
             return None
+
+    def is_noise_or_punctuation_only(self, text):
+        """Check if text is only punctuation, whitespace, or noise patterns"""
+        # Remove all whitespace and check if only punctuation remains
+        text_no_ws = text.replace(" ", "").replace("\t", "").replace("\n", "").strip()
+        if not text_no_ws:
+            return True
+        
+        # Check if it's only periods/dots (common noise pattern like ". . . ." or "....")
+        # After removing whitespace, check if all characters are periods
+        if len(text_no_ws) > 0 and all(c == '.' for c in text_no_ws):
+            return True
+        
+        # Check if it's only punctuation marks (no alphanumeric characters)
+        import string
+        if all(c in string.punctuation or c.isspace() for c in text):
+            return True
+        
+        # Check for patterns with spaces like ".  .  .  ." - normalize and check
+        normalized = text.replace(" ", "").replace("\t", "").replace("\n", "")
+        if normalized and all(c == '.' for c in normalized):
+            return True
+        
+        return False
 
     def is_hallucination(self, text):
         hallucinations = ["Thanks for watching", "subscribe", "MBC", "www.", ".com", "Amara.org"]
