@@ -130,63 +130,47 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
     if credentials.credentials != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-# --- Helper for Slot Status ---
-def get_current_slots_status():
-    """Helper to get current status of all slots from Redis"""
-    try:
-        keys = redis_client.keys('slot:*:activity')
-        active_map = {}
-        for k in keys:
-            try:
-                val = redis_client.get(k)
-                if val:
-                    data = json.loads(val)
-                    slot_id = int(k.decode('utf-8').split(':')[1])
-                    active_map[slot_id] = data
-            except: 
-                pass
-        
-        slots_list = []
-        for i in range(1, 5):
-            activity = active_map.get(i)
-            is_active = False
-            if activity and (time.time() - activity['last_seen'] < 15.0):
-                is_active = True
-            
-            slots_list.append({
-                "id": i,
-                "status": "online" if is_active else "offline",
-                "frequency_hz": activity['frequency_hz'] if activity else 0,
-                "mode": activity['mode'] if activity else "",
-                "host": activity.get('host') if activity else None,
-                "port": activity.get('port') if activity else None
-            })
-        return slots_list
-    except Exception as e:
-        logger.error(f"Error getting slot status: {e}")
-        return []
+# --- Helper for Slot Status (defined after SessionLocal initialization) ---
 
 # --- WebSocket Endpoint ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
+        logger.info(f"WS Accepted: {websocket.client}")
         # Send initial state
-        initial_slots = get_current_slots_status()
+        loop = asyncio.get_event_loop()
+        initial_slots = await loop.run_in_executor(None, get_current_slots_status)
+        logger.info(f"WS Sending Initial: {len(initial_slots)} slots")
         await websocket.send_text(json.dumps({
             "type": "SLOT_UPDATE",
             "data": initial_slots
         }))
+        logger.info("WS Initial Sent")
 
+        # Keep connection alive and handle ping/pong
         while True:
-            data = await websocket.receive_text()
-            if data == "ping":
-                await websocket.send_text("pong")
+            try:
+                # Use receive with timeout to allow periodic checks
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except asyncio.TimeoutError:
+                # Send ping to keep connection alive
+                try:
+                    await websocket.send_text(json.dumps({"type": "PING"}))
+                except:
+                    # Connection likely closed
+                    break
     except WebSocketDisconnect:
+        logger.info(f"WS Disconnected: {websocket.client}")
         manager.disconnect(websocket)
     except Exception as e:
-        logger.error(f"WS Error: {e}")
-        manager.disconnect(websocket)
+        logger.error(f"WS Error: {e}", exc_info=True)
+        try:
+            manager.disconnect(websocket)
+        except:
+            pass
 
 # --- Background Broadcaster ---
 async def broadcast_background_task():
@@ -252,47 +236,88 @@ async def broadcast_background_task():
                     last_ids[stream] = msg_list[-1][0]
                     
                     for msg_id, msg_data in msg_list:
-                        # Decode and broadcast
-                        # We send raw dict, frontend parses
-                        # Convert bytes in dict to strings
-                        clean_data = {}
-                        for k, v in msg_data.items():
-                            k_s = k.decode('utf-8') if isinstance(k, bytes) else k
-                            v_s = v.decode('utf-8') if isinstance(v, bytes) else v
-                            try:
-                                # Try to json decode if it's a JSON string (like 'callsigns' list?)
-                                # Actually models store fields as simple strings usually.
-                                # But let's check Transcript model. Text is string.
-                                pass
-                            except: pass
-                            clean_data[k_s] = v_s
-                        
-                        # Type mapping
-                        msg_type = "UNKNOWN"
-                        if stream == STREAM_TRANSCRIPTS: msg_type = "TRANSCRIPT"
-                        elif stream == STREAM_QSOS: msg_type = "QSO"
-                        elif stream == STREAM_CALLSIGNS: msg_type = "CALLSIGN"
-                        
-                        await manager.broadcast(json.dumps({
-                            "type": msg_type,
-                            "data": clean_data
-                        }))
+                        # Decode using proper model classes
+                        try:
+                            msg_type = "UNKNOWN"
+                            formatted_data = None
+                            
+                            if stream == STREAM_TRANSCRIPTS:
+                                transcript = RedisMessage.decode(msg_data, Transcript)
+                                msg_type = "TRANSCRIPT"
+                                # Format like TranscriptResponse
+                                formatted_data = {
+                                    "id": None,  # Not available from stream (will be assigned by DB)
+                                    "timestamp": transcript.timestamp,
+                                    "datetime": datetime.fromtimestamp(transcript.timestamp).isoformat(),
+                                    "frequency_hz": transcript.frequency_hz,
+                                    "mode": transcript.mode,
+                                    "text": transcript.text,
+                                    "confidence": transcript.confidence,
+                                    "duration_ms": transcript.duration_ms,
+                                    "source_id": transcript.source_id
+                                }
+                                logger.info(f"Broadcasting transcript via WebSocket: {transcript.text[:50]}... (freq={transcript.frequency_hz}Hz, mode={transcript.mode})")
+                                await manager.broadcast(json.dumps({
+                                    "type": msg_type,
+                                    "data": formatted_data
+                                }))
+                                continue  # Skip the generic broadcast below
+                            elif stream == STREAM_QSOS:
+                                qso = RedisMessage.decode(msg_data, QSO)
+                                msg_type = "QSO"
+                                formatted_data = {
+                                    "session_id": qso.session_id,
+                                    "start_time": qso.start_time,
+                                    "end_time": qso.end_time,
+                                    "start_datetime": datetime.fromtimestamp(qso.start_time).isoformat(),
+                                    "end_datetime": datetime.fromtimestamp(qso.end_time).isoformat() if qso.end_time else None,
+                                    "frequency_hz": qso.frequency_hz,
+                                    "mode": qso.mode,
+                                    "callsigns": qso.callsigns,
+                                    "summary": qso.summary,
+                                    "source_id": qso.source_id
+                                }
+                                await manager.broadcast(json.dumps({
+                                    "type": msg_type,
+                                    "data": formatted_data
+                                }))
+                                continue
+                            elif stream == STREAM_CALLSIGNS:
+                                callsign = RedisMessage.decode(msg_data, Callsign)
+                                msg_type = "CALLSIGN"
+                                formatted_data = {
+                                    "callsign": callsign.callsign,
+                                    "timestamp": callsign.timestamp,
+                                    "datetime": datetime.fromtimestamp(callsign.timestamp).isoformat(),
+                                    "frequency_hz": callsign.frequency_hz,
+                                    "confidence": callsign.confidence,
+                                    "context": callsign.context,
+                                    "source_id": callsign.source_id
+                                }
+                                await manager.broadcast(json.dumps({
+                                    "type": msg_type,
+                                    "data": formatted_data
+                                }))
+                                continue
+                        except Exception as decode_error:
+                            logger.error(f"Error decoding {stream} message: {decode_error}")
+                            # Fallback to raw data if decode fails
+                            clean_data = {}
+                            for k, v in msg_data.items():
+                                k_s = k.decode('utf-8') if isinstance(k, bytes) else k
+                                v_s = v.decode('utf-8') if isinstance(v, bytes) else v
+                                clean_data[k_s] = v_s
+                            await manager.broadcast(json.dumps({
+                                "type": "RAW",
+                                "stream": stream,
+                                "data": clean_data
+                            }))
 
             await asyncio.sleep(0.5) # Poll interval
             
         except Exception as e:
             logger.error(f"Broadcast Loop Error: {e}")
             await asyncio.sleep(5)
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(broadcast_background_task())
-
-# ------------------------------
-
-    
-    return True
-
 
 from background import PersistenceWorker
 from shared.db import init_db, TranscriptModel, CallsignModel, QSOModel, SlotModel
@@ -309,9 +334,75 @@ SessionLocal = init_db(DATABASE_URL)
 # Persistence Worker (Global ref)
 persistence_worker = None
 
+# --- Helper for Slot Status (defined after SessionLocal initialization) ---
+def get_current_slots_status():
+    """Helper to get current status of all slots - uses same logic as get_active_slots"""
+    session = SessionLocal()
+    try:
+        # 1. Get Live Activity from Redis
+        messages = redis_client.xrevrange(STREAM_AUDIO, count=500)
+        live_activity = {}
+        for mid, data in messages:
+            try:
+                chunk = RedisMessage.decode(data, AudioChunk)
+                sid = chunk.source_id
+                # Only keep the NEWEST chunk for each source
+                if sid not in live_activity:
+                    live_activity[sid] = {
+                        "frequency_hz": chunk.frequency_hz,
+                        "mode": chunk.mode,
+                        "last_seen": chunk.timestamp
+                    }
+            except: 
+                continue
+
+        # 2. Get Stored Config from DB
+        db_slots = session.query(SlotModel).all()
+        db_map = {str(s.id): s for s in db_slots}
+
+        results = []
+        for i in range(1, 5):
+            slot_id = str(i)
+            stored = db_map.get(slot_id)
+            
+            stored_config = {}
+            if stored and stored.config_json:
+                try: stored_config = json.loads(stored.config_json)
+                except: pass
+            
+            activity = live_activity.get(slot_id)
+            
+            # Determine status
+            is_active = False
+            if activity and (time.time() - activity['last_seen'] < 15.0):
+                is_active = True
+            
+            slot_data = {
+                "id": i,
+                "status": "online" if is_active else "offline",
+                "frequency_hz": activity['frequency_hz'] if activity else stored_config.get('frequency_hz'),
+                "mode": activity['mode'] if activity else stored_config.get('demod_mode'),
+                "host": stored_config.get('host'),
+                "port": stored_config.get('port'),
+                "source_type": stored_config.get('mode', 'kiwi')
+            }
+            results.append(slot_data)
+            
+        return results
+    except Exception as e:
+        logger.error(f"Error getting slot status: {e}")
+        return []
+    finally:
+        session.close()
+
 @app.on_event("startup")
 async def startup_event():
     global persistence_worker
+    
+    # Start WebSocket broadcast task
+    asyncio.create_task(broadcast_background_task())
+    
+    # Start persistence worker
     logger.info("Starting persistence worker...")
     persistence_worker = PersistenceWorker(redis_client, SessionLocal)
     persistence_worker.start()
@@ -990,16 +1081,21 @@ async def start_slot(slot_id: int, config: SlotConfig):
     try:
         # Pydantic to Dict
         config_dict = config.dict()
+        logger.info(f"Starting slot {slot_id} with config: host={config.host}, port={config.port}, freq={config.frequency_hz}Hz, mode={config.demod_mode}")
         
         # Upsert into DB
         slot = session.query(SlotModel).filter(SlotModel.id == slot_id).first()
         if not slot:
+            logger.info(f"Creating new slot {slot_id} in database")
             slot = SlotModel(id=slot_id)
             session.add(slot)
+        else:
+            logger.info(f"Updating existing slot {slot_id} in database")
         
         slot.enabled = True
         slot.config_json = json.dumps(config_dict)
         session.commit()
+        logger.info(f"Slot {slot_id} configuration saved to database: enabled=True, config={config_dict}")
 
         # Build Redis Command
         cmd = {
@@ -1016,10 +1112,11 @@ async def start_slot(slot_id: int, config: SlotConfig):
         }
         # Publish to Control Stream
         redis_client.xadd(STREAM_CONTROL, cmd)
+        logger.info(f"Slot {slot_id} start command published to Redis control stream")
         return {"status": "success", "message": f"Started slot {slot_id}"}
     except Exception as e:
         session.rollback()
-        logger.error(f"Error starting slot {slot_id}: {e}")
+        logger.error(f"Error starting slot {slot_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
@@ -1029,20 +1126,26 @@ async def stop_slot(slot_id: int):
     """Stop a capture slot"""
     session = SessionLocal()
     try:
+        logger.info(f"Stopping slot {slot_id}")
         # Update DB
         slot = session.query(SlotModel).filter(SlotModel.id == slot_id).first()
         if slot:
             slot.enabled = False
             session.commit()
+            logger.info(f"Slot {slot_id} disabled in database (enabled=False)")
+        else:
+            logger.warning(f"Slot {slot_id} not found in database, cannot update enabled status")
 
         cmd = {
             "command": "STOP",
             "slot_id": str(slot_id)
         }
         redis_client.xadd(STREAM_CONTROL, cmd)
+        logger.info(f"Slot {slot_id} stop command published to Redis control stream")
         return {"status": "success", "message": f"Stopped slot {slot_id}"}
     except Exception as e:
         session.rollback()
+        logger.error(f"Error stopping slot {slot_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

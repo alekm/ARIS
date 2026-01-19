@@ -39,6 +39,7 @@ class CaptureThread(threading.Thread):
         self.running = False
         self.client = None
         self.loop = None
+        self._retry_count = 0  # Track retry attempts for exponential backoff
         
         # Redis (Per thread) - Use Sync Client for stability
         self.redis = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False)
@@ -56,6 +57,9 @@ class CaptureThread(threading.Thread):
     async def _lifecycle(self):
         while self.running:
             try:
+                # Reset retry count on successful connection attempt
+                self._retry_count = 0
+                
                 # Update Heartbeat immediately
                 self._update_heartbeat()
                 
@@ -77,12 +81,20 @@ class CaptureThread(threading.Thread):
                 # Connect (Blocking until disconnect)
                 await self.client.connect()
                 
+            except TimeoutError as e:
+                logger.warning(f"Slot-{self.slot_id} - Connection timeout: {e}")
+                logger.info(f"Slot-{self.slot_id} - This may indicate network issues or KiwiSDR is unreachable")
             except Exception as e:
                 logger.error(f"Slot-{self.slot_id} - Error: {e}", exc_info=True)
                 
             # If we are strictly stopped, break. If error, retry after delay.
             if not self.running: break
-            await asyncio.sleep(5) # Retry delay
+            
+            # Exponential backoff for retries (5s, 10s, 20s, max 60s)
+            retry_delay = min(5 * (2 ** min(self._retry_count, 3)), 60)
+            self._retry_count = getattr(self, '_retry_count', 0) + 1
+            logger.info(f"Slot-{self.slot_id} - Retrying in {retry_delay}s (attempt {self._retry_count})...")
+            await asyncio.sleep(retry_delay)
 
     async def _handle_audio(self, audio_bytes, seq):
         """Callback from KiwiSDRClient"""
@@ -170,7 +182,13 @@ class SlotManager:
         logger.info("SlotManager starting...")
         
         # Auto-start from environment variables (backward compatibility)
-        self._auto_start_from_env()
+        # Only auto-start if explicitly enabled via MODE=kiwi and KIWI_HOST is set
+        # Otherwise, slots should be configured via Web UI or API
+        auto_start_enabled = os.getenv('MODE', '').lower() in ['kiwi', 'kiwisdr']
+        if auto_start_enabled:
+            self._auto_start_from_env()
+        else:
+            logger.info("Auto-start disabled. Configure slots via Web UI or API.")
         
         logger.info("SlotManager running. Waiting for commands...")
         last_id = '$'
@@ -189,21 +207,37 @@ class SlotManager:
 
     def _auto_start_from_env(self):
         """Auto-start a slot from environment variables (backward compatibility)"""
-        mode = os.getenv('MODE', '').lower()
-        if mode not in ['kiwi', 'kiwisdr']:
-            logger.info("MODE not set to 'kiwi', skipping auto-start")
-            return
-        
         # Read KiwiSDR config from environment
-        host = os.getenv('KIWI_HOST', '')
-        port = int(os.getenv('KIWI_PORT', 8073))
-        password = os.getenv('KIWI_PASSWORD', '')
-        frequency_hz = int(os.getenv('FREQUENCY_HZ', 7200000))
-        demod_mode = os.getenv('DEMOD_MODE', os.getenv('MODE', 'USB')).upper()
+        host = os.getenv('KIWI_HOST', '').strip()
+        port_str = os.getenv('KIWI_PORT', '').strip()
+        password = os.getenv('KIWI_PASSWORD', '').strip()
+        frequency_hz_str = os.getenv('FREQUENCY_HZ', '').strip()
+        demod_mode = os.getenv('DEMOD_MODE', 'USB').strip().upper()
         
+        # Validate required fields
         if not host:
-            logger.warning("KIWI_HOST not set, cannot auto-start")
+            logger.info("KIWI_HOST not set, skipping auto-start (configure slots via Web UI instead)")
             return
+        
+        if not port_str:
+            logger.warning("KIWI_PORT not set, using default 8073")
+            port = 8073
+        else:
+            try:
+                port = int(port_str)
+            except ValueError:
+                logger.error(f"Invalid KIWI_PORT value: {port_str}, using default 8073")
+                port = 8073
+        
+        if not frequency_hz_str:
+            logger.warning("FREQUENCY_HZ not set, using default 7200000")
+            frequency_hz = 7200000
+        else:
+            try:
+                frequency_hz = int(frequency_hz_str)
+            except ValueError:
+                logger.error(f"Invalid FREQUENCY_HZ value: {frequency_hz_str}, using default 7200000")
+                frequency_hz = 7200000
         
         # Auto-start slot 1 (Matches UI/Server indexing 1-4)
         config = {
@@ -214,7 +248,8 @@ class SlotManager:
             'mode': demod_mode
         }
         
-        logger.info(f"Auto-starting slot 1 from environment: {host}:{port}, {frequency_hz} Hz, {demod_mode}")
+        logger.info(f"Auto-starting slot 1 from environment variables: {host}:{port}, {frequency_hz} Hz, {demod_mode}")
+        logger.info("Note: To disable auto-start, remove MODE=kiwi from environment or unset KIWI_HOST")
         self.start_slot('1', config)
 
     def handle_command(self, data):

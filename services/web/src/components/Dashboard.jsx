@@ -13,7 +13,7 @@ const Dashboard = () => {
         { id: 4, status: 'offline', activeConfig: null }
     ]);
     const [transcripts, setTranscripts] = useState([]);
-    const { slotsData, lastMessage } = useWebSocket();
+    const { slotsData, lastMessage, isConnected, connectionError } = useWebSocket();
 
     // Initial Transcript Fetch (keep this for history)
     useEffect(() => {
@@ -56,11 +56,26 @@ const Dashboard = () => {
     // Handle Real-time Transcripts
     useEffect(() => {
         if (lastMessage && lastMessage.type === 'TRANSCRIPT') {
+            const newT = lastMessage.data;
+            console.log("Received transcript via WebSocket:", newT);
             setTranscripts(prev => {
-                // Deduplicate by ID if possible, or just prepend
-                const newT = lastMessage.data;
-                // Optional: Check if already exists (for slow networks/reconnects)
-                if (prev.some(t => t.id === newT.id)) return prev;
+                // Validate transcript data before adding
+                if (!newT || !newT.text || !newT.timestamp) {
+                    console.warn("Invalid transcript data received:", newT);
+                    return prev;
+                }
+                
+                // Deduplicate by timestamp + text (since we don't have ID from stream)
+                // Check if we already have this transcript (same timestamp and text)
+                const exists = prev.some(t => 
+                    t.timestamp === newT.timestamp && 
+                    t.text === newT.text
+                );
+                if (exists) {
+                    console.log("Transcript already exists, skipping");
+                    return prev;
+                }
+                console.log("Adding new transcript to feed");
                 return [newT, ...prev].slice(0, 50);
             });
         }
@@ -92,6 +107,30 @@ const Dashboard = () => {
 
     return (
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(400px, 1fr) 1.5fr', gap: '20px', flex: 1, minHeight: 0 }}>
+            {connectionError && (
+                <div style={{
+                    gridColumn: '1 / -1',
+                    padding: '10px',
+                    background: '#ff4444',
+                    color: '#fff',
+                    borderRadius: '4px',
+                    marginBottom: '10px'
+                }}>
+                    ⚠️ {connectionError}
+                </div>
+            )}
+            {!isConnected && !connectionError && (
+                <div style={{
+                    gridColumn: '1 / -1',
+                    padding: '10px',
+                    background: '#ffaa00',
+                    color: '#000',
+                    borderRadius: '4px',
+                    marginBottom: '10px'
+                }}>
+                    🔄 Connecting to WebSocket...
+                </div>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', overflowY: 'auto' }}>
                 {slots.map(slot => (
                     <SlotCard
@@ -104,7 +143,13 @@ const Dashboard = () => {
             </div>
 
             <div style={{ height: '100%' }}>
-                <TranscriptFeed transcripts={transcripts} />
+                <TranscriptFeed 
+                    transcripts={transcripts} 
+                    onDelete={(transcriptId) => {
+                        // Remove deleted transcript from local state
+                        setTranscripts(prev => prev.filter(t => t.id !== transcriptId));
+                    }}
+                />
             </div>
         </div>
     );

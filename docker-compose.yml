@@ -32,10 +32,12 @@ services:
     environment:
       - REDIS_PORT=${REDIS_PORT:-6379}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - MODE=kiwi
-      - KIWI_HOST=172.16.250.99
-      - KIWI_PORT=8073
-      - FREQUENCY_HZ=7188000
+      # Note: Slots are configured via Web UI or API, not environment variables
+      # To enable auto-start of slot 1, set MODE=kiwi and KIWI_HOST in .env file
+      # - MODE=${MODE:-}
+      # - KIWI_HOST=${KIWI_HOST:-}
+      # - KIWI_PORT=${KIWI_PORT:-8073}
+      # - FREQUENCY_HZ=${FREQUENCY_HZ:-7200000}
     restart: unless-stopped
   stt:
     container_name: aris-stt

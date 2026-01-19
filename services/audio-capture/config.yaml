@@ -4,7 +4,9 @@
 mode: kiwi
 
 # KiwiSDR settings (for mode: kiwi)
-kiwi_host: 172.16.250.99  # KiwiSDR IP address (override with KIWI_HOST env var)
+# Note: Slots are configured via Web UI or API, not this config file
+# These are only used for backward compatibility auto-start
+kiwi_host: null  # KiwiSDR IP address (override with KIWI_HOST env var)
 kiwi_port: 8073
 kiwi_password: null  # If required
 kiwi_agc: false

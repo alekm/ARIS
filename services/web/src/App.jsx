@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react
 import Dashboard from './components/Dashboard';
 import QSOList from './components/QSOList';
 import { Terminal, Database } from 'lucide-react';
+import { useWebSocket } from './contexts/WebSocketContext';
 import './App.css';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -10,6 +11,7 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 const Layout = ({ children }) => {
   const [stats, setStats] = useState(null);
   const location = useLocation();
+  const { isConnected } = useWebSocket();
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -76,7 +78,9 @@ const Layout = ({ children }) => {
             <Link to="/qsos" style={{ color: 'inherit', textDecoration: 'none', cursor: 'pointer' }}>
               <span>QSOS: <span style={{ color: '#fff' }}>{stats.qsos_count}</span></span>
             </Link>
-            <span style={{ color: 'var(--color-primary)' }}>SYSTEM_ONLINE</span>
+            <span style={{ color: isConnected ? 'var(--color-primary)' : '#ffaa00' }}>
+              {isConnected ? 'WS_CONNECTED' : 'WS_CONNECTING...'}
+            </span>
           </div>
         )}
       </div>

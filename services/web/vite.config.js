@@ -13,9 +13,11 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://aris-api:8000',
+        target: 'http://aris-api:8000', // Use http://, Vite handles WS upgrade
         ws: true,
         changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path, // Don't rewrite the path
       }
     }
   }

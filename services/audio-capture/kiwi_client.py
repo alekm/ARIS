@@ -100,10 +100,19 @@ class KiwiSDRClient:
         # Standard KiwiSDR URL format: /{timestamp}/SND
         url = f"ws://{self.host}:{self.port}/{timestamp}/SND"
         
-        logger.info(f"Connecting to KiwiSDR: {url}")
+        logger.info(f"Connecting to KiwiSDR at {self.host}:{self.port}")
+        logger.debug(f"WebSocket URL: {url}")
         
         try:
-            async with websockets.connect(url, ping_interval=None) as ws:
+            # Set connection timeout to 30 seconds (default is often 10s which may be too short)
+            # open_timeout controls the WebSocket handshake timeout
+            # This helps with slow networks or when KiwiSDR is under load
+            async with websockets.connect(
+                url, 
+                ping_interval=None,
+                open_timeout=30.0,  # 30 second timeout for handshake
+                close_timeout=10.0  # 10 second timeout for close
+            ) as ws:
                 self.ws = ws
                 logger.info("WebSocket Connected")
                 
