@@ -12,12 +12,14 @@ ARIS is a local-first, GPU-accelerated system for continuous monitoring of amate
 
 - **Real-time STT** using faster-whisper (GPU-accelerated) with hallucination filtering
 - **Automatic callsign extraction** with phonetic alphabet support
-- **Automatic callsign extraction** with phonetic alphabet support
 - **AI-powered QSO summarization** (local LLM) with automatic session gap detection and recursive summarization for long audio
 - **Data Persistence** using SQLite for reliable storage of transcripts and history
 - **KiwiSDR Integration** with robust passive-handshake connection
-- **Web Dashboard** for monitoring, searching, and managing transcripts
+- **Web Dashboard** with real-time WebSocket updates for live monitoring
+- **Multi-slot Management** - Configure and monitor up to 4 receiver slots via Web UI
 - **Control** of Frequency and Mode (LSB/USB/AM/CW) directly from UI
+- **Transcript Management** - View, search, and delete transcripts from the Web UI
+- **Slot Persistence** - Slot configurations saved to database and automatically restored on restart
 - **Local-only** - no cloud dependencies
 - **Docker-based** microservices architecture
 
@@ -38,12 +40,13 @@ flowchart LR
 
 ## Services
 
-1. **audio-capture** - Captures audio from KiwiSDR (or mock source)
+1. **audio-capture** - Captures audio from KiwiSDR (or mock source) with multi-slot support
 2. **stt** - Speech-to-text using faster-whisper on GPU
 3. **callsign-extractor** - Regex + phonetic callsign detection
 4. **summarizer** - LLM-based QSO summarization
-5. **api** - FastAPI web server with REST API and UI
-6. **redis** - Message broker and data bus
+5. **api** - FastAPI web server with REST API and WebSocket support
+6. **web** - React-based Web UI with real-time updates
+7. **redis** - Message broker and data bus
 
 ## Quick Start
 
@@ -215,9 +218,14 @@ LLM_API_KEY=not-needed
 - `GET /docs` - Interactive API documentation
 - `GET /api/stats` - System statistics
 - `GET /api/transcripts?limit=50&frequency=7200000` - Recent transcripts
+- `DELETE /api/transcripts/{transcript_id}` - Delete a transcript
 - `GET /api/callsigns?limit=50&callsign=W1AW` - Callsign detections
 - `GET /api/qsos?limit=20` - QSO summaries
 - `GET /api/search/callsign/{callsign}` - Search by callsign
+- `GET /api/slots` - Get active slot status
+- `POST /api/slots/{slot_id}/start` - Start/configure a slot
+- `POST /api/slots/{slot_id}/stop` - Stop a slot
+- `WS /ws` - WebSocket endpoint for real-time updates (transcripts, slots, QSOs)
 
 ## Development
 
@@ -232,7 +240,8 @@ ARIS/
 │   ├── stt/                # Speech-to-text
 │   ├── callsign-extractor/ # Callsign NLP
 │   ├── summarizer/         # LLM summaries
-│   └── api/                # Web API/UI
+│   ├── api/                # FastAPI REST API and WebSocket
+│   └── web/                # React Web UI
 ├── shared/
 │   └── models.py           # Common data structures
 └── data/                   # Persistent data
