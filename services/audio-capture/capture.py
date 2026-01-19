@@ -10,11 +10,18 @@ import yaml
 from kiwi_client import KiwiSDRClient
 
 # Logging Setup
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
+log_level = getattr(logging, LOG_LEVEL, logging.WARNING)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("CaptureService")
+
+# Reduce noise from websockets library
+logging.getLogger("websockets.client").setLevel(logging.WARNING)
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
+logging.getLogger("websockets.protocol").setLevel(logging.WARNING)
 
 # Redis Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")

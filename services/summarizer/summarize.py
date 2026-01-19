@@ -17,8 +17,10 @@ from openai import OpenAI
 sys.path.insert(0, '/app')
 from shared.models import Transcript, Callsign, QSO, STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS, STREAM_CONTROL, RedisMessage
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
+log_level = getattr(logging, LOG_LEVEL, logging.WARNING)
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)

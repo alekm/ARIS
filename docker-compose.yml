@@ -32,6 +32,7 @@ services:
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
     restart: unless-stopped
   stt:
     container_name: aris-stt
@@ -50,6 +51,7 @@ services:
       - DEVICE=${DEVICE:-cuda} # cuda or cpu
       - VAD_THRESHOLD=${VAD_THRESHOLD:-0.5}
       - ENERGY_THRESHOLD=${ENERGY_THRESHOLD:-0.01}
+      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
     deploy:
       resources:
         reservations:
@@ -71,6 +73,7 @@ services:
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
     restart: unless-stopped
   summarizer:
     container_name: aris-summarizer
@@ -89,6 +92,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-llama3.2:latest}
       - LLM_HOST=${LLM_HOST:-host.docker.internal:11434} # Adjust for your LLM server
       - LLM_API_KEY=${LLM_API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -125,6 +129,7 @@ services:
       - DATABASE_URL=${DATABASE_URL:-sqlite:////data/db/aris.db}
       - API_PORT=8000
       - API_HOST=${API_HOST:-0.0.0.0}
+      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
     restart: unless-stopped
     healthcheck:
       test:

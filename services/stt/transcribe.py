@@ -18,8 +18,10 @@ from scipy import signal as scipy_signal
 sys.path.insert(0, '/app')
 from shared.models import AudioChunk, Transcript, STREAM_AUDIO, STREAM_TRANSCRIPTS, RedisMessage
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
+log_level = getattr(logging, LOG_LEVEL, logging.WARNING)
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)

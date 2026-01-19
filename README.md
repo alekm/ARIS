@@ -140,6 +140,7 @@ All configuration is now managed via environment variables in `.env`:
 - **STT**: `MODEL_SIZE`, `DEVICE`, `VAD_THRESHOLD`
 - **LLM**: `LLM_BACKEND`, `LLM_MODEL`, `LLM_HOST`, `LLM_API_KEY`
 - **Database**: `DATABASE_URL`
+- **Logging**: `LOG_LEVEL` (default: WARNING) - Controls log verbosity for all services (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
 See `.env.example` for all available options and defaults.
 

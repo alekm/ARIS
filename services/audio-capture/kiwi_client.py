@@ -7,7 +7,14 @@ import struct
 import numpy as np
 import array
 
+import os
+
 logger = logging.getLogger(__name__)
+
+# Reduce noise from websockets library
+logging.getLogger("websockets.client").setLevel(logging.WARNING)
+logging.getLogger("websockets.server").setLevel(logging.WARNING)
+logging.getLogger("websockets.protocol").setLevel(logging.WARNING)
 
 # IMAADPCM Tables
 stepSizeTable = (
@@ -184,8 +191,11 @@ class KiwiSDRClient:
             logger.debug(f">> {cmd}")
             await self.ws.send(cmd)
 
-        logger.info("Starting Keepalive Loop")
-        asyncio.create_task(self._keepalive_loop())
+        if not hasattr(self, 'keepalive_task') or not self.keepalive_task or self.keepalive_task.done():
+            logger.info("Starting Keepalive Loop")
+            self.keepalive_task = asyncio.create_task(self._keepalive_loop())
+        else:
+            logger.info("Keepalive Loop already running")
 
     async def _keepalive_loop(self):
         while self.running and self.ws:

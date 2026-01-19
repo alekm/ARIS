@@ -31,8 +31,10 @@ from shared.models import (
     STREAM_CONTROL, RedisMessage
 )
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
+log_level = getattr(logging, LOG_LEVEL, logging.WARNING)
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -1306,35 +1308,36 @@ async def stop_capture(req: Request = None):
         logger.error(f"Error sending stop command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/kiwi/status")
-async def get_kiwi_status():
-    """Get KiwiSDR connection status and metrics"""
-    # This would need to be implemented in audio-capture service
-    # For now, return basic info
-    return {
-        "status": "unknown",
-        "message": "KiwiSDR status endpoint - requires implementation in audio-capture service"
-    }
+# Debug endpoints disabled to reduce log noise
+# @app.get("/api/kiwi/status")
+# async def get_kiwi_status():
+#     """Get KiwiSDR connection status and metrics"""
+#     # This would need to be implemented in audio-capture service
+#     # For now, return basic info
+#     return {
+#         "status": "unknown",
+#         "message": "KiwiSDR status endpoint - requires implementation in audio-capture service"
+#     }
 
-@app.get("/api/kiwi/config")
-async def get_kiwi_config():
-    """Get current KiwiSDR configuration"""
-    # Read from recent audio chunk
-    try:
-        messages = redis_client.xrevrange(STREAM_AUDIO, count=1)
-        if messages:
-            msg_id, msg_data = messages[0]
-            chunk = RedisMessage.decode(msg_data, AudioChunk)
-            return {
-                "frequency_hz": chunk.frequency_hz,
-                "mode": chunk.mode,
-                "low_cut": chunk.low_cut,
-                "high_cut": chunk.high_cut
-            }
-        return {"message": "No audio chunks available"}
-    except Exception as e:
-        logger.error(f"Error getting KiwiSDR config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.get("/api/kiwi/config")
+# async def get_kiwi_config():
+#     """Get current KiwiSDR configuration"""
+#     # Read from recent audio chunk
+#     try:
+#         messages = redis_client.xrevrange(STREAM_AUDIO, count=1)
+#         if messages:
+#             msg_id, msg_data = messages[0]
+#             chunk = RedisMessage.decode(msg_data, AudioChunk)
+#             return {
+#                 "frequency_hz": chunk.frequency_hz,
+#                 "mode": chunk.mode,
+#                 "low_cut": chunk.low_cut,
+#                 "high_cut": chunk.high_cut
+#             }
+#         return {"message": "No audio chunks available"}
+#     except Exception as e:
+#         logger.error(f"Error getting KiwiSDR config: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/audio/chunk/{chunk_id}")
