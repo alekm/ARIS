@@ -48,9 +48,6 @@ stats: ## Show Redis stream statistics
 	docker compose exec redis redis-cli XLEN callsigns
 	docker compose exec redis redis-cli XLEN qsos
 
-monitor-audio: ## Monitor HackRF audio capture (headless-friendly)
-	@./monitor-audio.sh
-
 test-mock: ## Test with mock audio
 	@echo "Starting services in mock mode..."
 	docker compose up -d

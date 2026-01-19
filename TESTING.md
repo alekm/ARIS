@@ -18,13 +18,16 @@ All services should show "Up" status. Expected services:
 - `aris-summarizer`
 - `aris-api` (healthy)
 
-### 2. Check Audio Capture (HackRF)
+### 2. Check Audio Capture
 
-**Using the monitoring script:**
+**Using the API stats endpoint:**
 ```bash
-make monitor-audio
-# or
-./monitor-audio.sh
+curl http://localhost:8000/api/stats
+```
+
+**Or check logs:**
+```bash
+docker compose logs audio-capture --tail 20
 ```
 
 **Manual checks:**
@@ -166,9 +169,9 @@ docker compose logs stt --tail=20 | grep -E "(ERROR|Transcribed|Published transc
 
 **Using Makefile:**
 ```bash
-make monitor-audio    # Monitor audio capture
 make stats            # Show Redis stream stats
 make logs-audio      # Tail audio capture logs
+curl http://localhost:8000/api/stats  # Check system stats via API
 make logs-stt         # Tail STT logs
 make logs-api         # Tail API logs
 make ps               # Show service status
