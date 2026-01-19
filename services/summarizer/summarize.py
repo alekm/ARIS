@@ -234,12 +234,12 @@ class SummarizerService:
 
         logger.info(f"Connected to Redis at {redis_host}:{redis_port}")
 
-        self.session_manager = SessionManager(gap_threshold_sec=30)
+        self.session_manager = SessionManager(gap_threshold_sec=60)
         self.summarizer = LLMSummarizer()
 
         # Cache callsigns by frequency
         self.callsign_cache = {}  # frequency -> list of callsigns
-
+        
         self.running = False
         self.consumer_group = 'summarizer'
         self.consumer_name = f'summarizer-{os.getpid()}'
@@ -258,11 +258,15 @@ class SummarizerService:
             transcript = RedisMessage.decode(transcript_data, Transcript)
 
             # Add to session manager
+            # If add_transcript returns True, it means a gap was detected and the CURRENT transcript was NOT added.
             session_ready = self.session_manager.add_transcript(transcript)
 
             if session_ready:
-                # Generate summary for completed session
+                # Generate summary for completed (OLD) session
                 self.summarize_session(transcript.frequency_hz, transcript.mode)
+                
+                # Add the CURRENT transcript to the new (now empty) buffer
+                self.session_manager.add_transcript(transcript)
 
         except Exception as e:
             logger.error(f"Error processing transcript: {e}", exc_info=True)

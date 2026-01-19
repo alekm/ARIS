@@ -280,6 +280,9 @@ class QSOResponse(BaseModel):
     callsigns: List[str]
     summary: Optional[str]
 
+class QSODetailResponse(QSOResponse):
+    transcripts: List[TranscriptResponse]
+
 class SlotConfig(BaseModel):
     mode: str = 'kiwi' # 'kiwi' or 'mock'
     host: Optional[str] = None
@@ -1009,6 +1012,62 @@ async def get_qsos(
         return results
     except Exception as e:
         logger.error(f"Error getting QSOs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/qsos/{session_id}", response_model=QSODetailResponse)
+async def get_qso_detail(session_id: str):
+    """Get full details for a specific QSO including transcripts"""
+    session = SessionLocal()
+    try:
+        qso = session.query(QSOModel).filter(QSOModel.session_id == session_id).first()
+        if not qso:
+            raise HTTPException(status_code=404, detail="QSO not found")
+            
+        # Get associated transcripts
+        # Logic: Match frequency and time range with a small buffer
+        buffer_sec = 2.0
+        end_time = qso.end_time if qso.end_time else time.time()
+        
+        transcripts_db = session.query(TranscriptModel).filter(
+            TranscriptModel.frequency_hz == qso.frequency_hz,
+            TranscriptModel.timestamp >= qso.start_time - buffer_sec,
+            TranscriptModel.timestamp <= end_time + buffer_sec
+        ).order_by(TranscriptModel.timestamp.asc()).all()
+        
+        transcripts = []
+        for t in transcripts_db:
+            transcripts.append(TranscriptResponse(
+                id=t.id,
+                timestamp=t.timestamp,
+                datetime=t.datetime.isoformat(),
+                frequency_hz=t.frequency_hz,
+                mode=t.mode,
+                text=t.text,
+                confidence=t.confidence,
+                duration_ms=t.duration_ms
+            ))
+            
+        callsigns_list = qso.callsigns_list.split(',') if qso.callsigns_list else []
+        
+        return QSODetailResponse(
+            session_id=qso.session_id,
+            start_time=qso.start_time,
+            end_time=qso.end_time,
+            start_datetime=datetime.fromtimestamp(qso.start_time).isoformat(),
+            end_datetime=datetime.fromtimestamp(qso.end_time).isoformat() if qso.end_time else None,
+            frequency_hz=qso.frequency_hz,
+            mode=qso.mode,
+            callsigns=callsigns_list,
+            summary=qso.summary,
+            transcripts=transcripts
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting QSO detail: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
