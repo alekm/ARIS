@@ -78,8 +78,8 @@ docker compose up -d
 
 4. Access the web UI:
 ```bash
-open http://localhost:8000
-# Or use the port configured in .env: http://localhost:${API_PORT}
+open http://localhost:3000
+# API is available at http://localhost:8000
 ```
 
 ## Deployment
@@ -151,7 +151,7 @@ See `.env.example` for all available options and defaults.
 
 **Recommended: Use the Web UI**
 1. Start the services: `docker compose up -d`
-2. Open the Web UI: `http://localhost:8000`
+2. Open the Web UI: `http://localhost:3000`
 3. Use the Dashboard to configure and start slots via the UI
 
 **Alternative: Use the API**
@@ -186,8 +186,8 @@ Then restart: `docker compose restart audio-capture`
 KiwiSDR slots are configured via the Web UI or API endpoints. The `services/audio-capture/config.yaml` file is no longer used for slot configuration. Slot configurations are stored in the database and persist across restarts.
 
 To configure slots:
-- **Web UI**: Use the Dashboard at `http://localhost:8000`
-- **API**: Use `POST /api/slots/{slot_id}/start` endpoint
+- **Web UI**: Use the Dashboard at `http://localhost:3000`
+- **API**: Use `POST /api/slots/{slot_id}/start` endpoint (API at `http://localhost:8000`)
 
 ### STT Settings (`.env`)
 
