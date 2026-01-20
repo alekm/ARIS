@@ -202,11 +202,11 @@ ENERGY_THRESHOLD=0.01  # Minimum RMS energy to process (prevents transcribing no
 
 **Translation Feature:**
 When `ENABLE_TRANSLATION=true`, faster-whisper will:
-- Auto-detect the source language of the audio
-- Translate the speech to English
-- Works with any language supported by Whisper (100+ languages)
+- Prefer translation-to-English behavior (auto-detect source language and emit English text when supported)
+- Works with any language supported by Whisper ("100+ languages" per upstream docs; not all are validated in ARIS)
 
-When `ENABLE_TRANSLATION=false` (default), the service transcribes English speech as before.
+When `ENABLE_TRANSLATION=false` (default), the service *requests* plain transcription in the original language.  
+Note: due to faster-whisper/Whisper model behavior, occasional implicit translation may still occur on some inputs even with translation disabled.
 
 ### LLM Settings (`.env`)
 
