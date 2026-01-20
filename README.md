@@ -301,8 +301,6 @@ docker compose logs -f stt
 - [x] Frequency & Mode Control
 - [x] Multi-slot Management (up to 4 concurrent receivers)
 - [x] Slot Persistence (configurations saved to database)
-- [ ] Multi-frequency monitoring (single slot, multiple frequencies)
-- [ ] Band-specific audio profiles
 
 ### Phase 3: Intelligence Features
 - [x] QSO Summarization (LLM)
@@ -352,16 +350,16 @@ docker compose logs -f stt
 ## Hardware Requirements
 
 ### Minimum
-- 8-core CPU
+- 4-core CPU
 - 16GB RAM
-- NVIDIA GPU with 4GB VRAM
-- 100GB storage
+- NVIDIA GPU with 4GB VRAM (for STT with small/medium models)
+- 50GB storage
 
-### Recommended (Current)
-- i9-10980XE (18 cores)
-- 96GB RAM
-- 2x NVIDIA A4000 (16GB each)
-- 500GB NVMe SSD
+### Recommended
+- 8-core CPU or better
+- 32-64GB RAM (sufficient for all services including Redis)
+- NVIDIA GPU with 16GB VRAM (can run faster-whisper medium model and ~12B LLM model simultaneously)
+- 100GB+ SSD storage (for models, transcripts, and database)
 
 ### SDR Options
 - **KiwiSDR** - Remote WebSDR receiver (audio stream)
