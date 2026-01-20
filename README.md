@@ -11,6 +11,7 @@ ARIS is a local-first, GPU-accelerated system for continuous monitoring of amate
 ### Key Features
 
 - **Real-time STT** using faster-whisper (GPU-accelerated) with hallucination filtering
+- **Multi-language Translation** - Auto-detect source language and translate to English (configurable)
 - **Automatic callsign extraction** with phonetic alphabet support
 - **AI-powered QSO summarization** (local LLM) with automatic session gap detection and recursive summarization for long audio
 - **Data Persistence** using SQLite for reliable storage of transcripts and history
@@ -140,7 +141,7 @@ Configuration is managed via environment variables in `.env`:
 - **API Configuration**: `API_PORT`, `API_HOST`
 - **Redis**: `REDIS_HOST`, `REDIS_PORT` (defaults work for Docker Compose)
 - **Audio Capture**: Environment variables (`MODE`, `KIWI_HOST`, etc.) are optional and only used for backward compatibility auto-start of slot 0. **Slots are configured via the Web UI or API endpoints** (see below).
-- **STT**: `MODEL_SIZE`, `DEVICE`, `VAD_THRESHOLD`, `ENERGY_THRESHOLD`
+- **STT**: `MODEL_SIZE`, `DEVICE`, `ENABLE_TRANSLATION`, `VAD_THRESHOLD`, `ENERGY_THRESHOLD`
 - **LLM**: `LLM_BACKEND`, `LLM_MODEL`, `LLM_HOST`, `LLM_API_KEY`
 - **Database**: `DATABASE_URL`
 - **Logging**: `LOG_LEVEL` (default: WARNING) - Controls log verbosity for all services (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -194,8 +195,18 @@ To configure slots:
 ```bash
 MODEL_SIZE=medium  # tiny, base, small, medium, large-v2, large-v3
 DEVICE=cuda
+ENABLE_TRANSLATION=false  # Enable auto-detect and translate to English (default: false)
 VAD_THRESHOLD=0.5  # Voice activity detection sensitivity
+ENERGY_THRESHOLD=0.01  # Minimum RMS energy to process (prevents transcribing noise)
 ```
+
+**Translation Feature:**
+When `ENABLE_TRANSLATION=true`, faster-whisper will:
+- Auto-detect the source language of the audio
+- Translate the speech to English
+- Works with any language supported by Whisper (100+ languages)
+
+When `ENABLE_TRANSLATION=false` (default), the service transcribes English speech as before.
 
 ### LLM Settings (`.env`)
 
