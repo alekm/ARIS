@@ -64,12 +64,15 @@ class CaptureThread(threading.Thread):
                 self._update_heartbeat()
                 
                 # Initialize Client
+                # Read audio endianness from config (default: big, as per KiwiSDR spec)
+                audio_endian = self.config.get('audio_endian', 'big')
                 self.client = KiwiSDRClient(
                     host=self.config['host'],
                     port=self.config['port'],
                     password=self.config.get('password', ''),
                     frequency_hz=self.config['frequency_hz'],
-                    mode=self.config['mode']
+                    mode=self.config['mode'],
+                    audio_endian=audio_endian
                 )
                 
                 # Start Heartbeat
@@ -113,8 +116,8 @@ class CaptureThread(threading.Thread):
                 low_cut = -5000
                 high_cut = 5000
             elif self.client.mode == "CW":
-                low_cut = 400
-                high_cut = 800
+                low_cut = -500  # Symmetric around carrier (was 400, asymmetric)
+                high_cut = 500  # Symmetric around carrier (was 800, asymmetric)
             
             # Match Shared Model (AudioChunk) Protocol
             payload = {

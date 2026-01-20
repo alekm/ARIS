@@ -305,10 +305,7 @@ docker compose logs -f stt
 ### Phase 3: Intelligence Features
 - [x] QSO Summarization (LLM)
 - [x] Multi-language Translation (auto-detect and translate to English)
-- [ ] Alert system (callsign/keyword notifications)
-- [ ] DX spot detection
-- [ ] Net detection and tracking
-- [ ] Historical trend analysis
+- [ ] Improved phonetic callsign handling (including LLM-assisted decoding of noisy/partial phonetics)
 
 ### Phase 4: Web UI & Management ✅
 - [x] Web Dashboard with real-time WebSocket updates
@@ -324,7 +321,6 @@ docker compose logs -f stt
 - [x] Configurable ports and settings
 - [x] SQLite for long-term storage (PostgreSQL planned for scale)
 - [ ] Performance optimization
-- [ ] Systemd service files
 - [ ] Additional monitoring and alerting
 
 ## Future Goals
@@ -346,6 +342,12 @@ docker compose logs -f stt
 - Automatically measure and compare SNR across endpoints
 - Select endpoint(s) with best signal quality for each frequency
 - Improve overall system reliability and transcription quality
+
+### Advanced Operating Features
+- Alert system (callsign/keyword notifications)
+- DX spot detection
+- Net detection and tracking
+- Historical trend analysis
 
 ## Hardware Requirements
 

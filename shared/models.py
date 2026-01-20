@@ -80,10 +80,44 @@ class Transcript:
     @classmethod
     def from_dict(cls, d):
         # Convert numeric fields from strings to proper types
-        d['timestamp'] = float(d['timestamp']) if isinstance(d['timestamp'], str) else d['timestamp']
-        d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
-        d['confidence'] = float(d['confidence']) if isinstance(d['confidence'], str) else d['confidence']
-        d['duration_ms'] = int(d['duration_ms']) if isinstance(d['duration_ms'], str) else d['duration_ms']
+        def safe_float(value):
+            """Safely convert value to float, handling numpy string representations"""
+            if isinstance(value, str):
+                # Handle numpy type string representations (e.g., 'np.float64(0.5)')
+                if value.startswith('np.') and '(' in value and ')' in value:
+                    try:
+                        start = value.find('(') + 1
+                        end = value.find(')')
+                        return float(value[start:end])
+                    except (ValueError, IndexError):
+                        pass
+                try:
+                    return float(value)
+                except ValueError:
+                    return value
+            return float(value) if not isinstance(value, (int, float)) else value
+        
+        def safe_int(value):
+            """Safely convert value to int"""
+            if isinstance(value, str):
+                # Handle numpy type string representations
+                if value.startswith('np.') and '(' in value and ')' in value:
+                    try:
+                        start = value.find('(') + 1
+                        end = value.find(')')
+                        return int(float(value[start:end]))
+                    except (ValueError, IndexError):
+                        pass
+                try:
+                    return int(value)
+                except ValueError:
+                    return value
+            return int(value) if not isinstance(value, int) else value
+        
+        d['timestamp'] = safe_float(d['timestamp'])
+        d['frequency_hz'] = safe_int(d['frequency_hz'])
+        d['confidence'] = safe_float(d['confidence'])
+        d['duration_ms'] = safe_int(d['duration_ms'])
         d['source_id'] = str(d.get('source_id', 'default'))
         return cls(**d)
 
@@ -104,9 +138,43 @@ class Callsign:
     @classmethod
     def from_dict(cls, d):
         # Convert numeric fields from strings to proper types
-        d['timestamp'] = float(d['timestamp']) if isinstance(d['timestamp'], str) else d['timestamp']
-        d['frequency_hz'] = int(d['frequency_hz']) if isinstance(d['frequency_hz'], str) else d['frequency_hz']
-        d['confidence'] = float(d['confidence']) if isinstance(d['confidence'], str) else d['confidence']
+        def safe_float(value):
+            """Safely convert value to float, handling numpy string representations"""
+            if isinstance(value, str):
+                # Handle numpy type string representations (e.g., 'np.float64(0.5)')
+                if value.startswith('np.') and '(' in value and ')' in value:
+                    try:
+                        start = value.find('(') + 1
+                        end = value.find(')')
+                        return float(value[start:end])
+                    except (ValueError, IndexError):
+                        pass
+                try:
+                    return float(value)
+                except ValueError:
+                    return value
+            return float(value) if not isinstance(value, (int, float)) else value
+        
+        def safe_int(value):
+            """Safely convert value to int"""
+            if isinstance(value, str):
+                # Handle numpy type string representations
+                if value.startswith('np.') and '(' in value and ')' in value:
+                    try:
+                        start = value.find('(') + 1
+                        end = value.find(')')
+                        return int(float(value[start:end]))
+                    except (ValueError, IndexError):
+                        pass
+                try:
+                    return int(value)
+                except ValueError:
+                    return value
+            return int(value) if not isinstance(value, int) else value
+        
+        d['timestamp'] = safe_float(d['timestamp'])
+        d['frequency_hz'] = safe_int(d['frequency_hz'])
+        d['confidence'] = safe_float(d['confidence'])
         d['source_id'] = str(d.get('source_id', 'default'))
         return cls(**d)
 
@@ -155,14 +223,26 @@ class RedisMessage:
                 # Check bool first (since bool is a subclass of int)
                 if isinstance(v, bool):
                     result[k] = 'true' if v else 'false'  # Convert bool to string
-                elif isinstance(v, (str, int, float)):
-                    result[k] = v
                 elif isinstance(v, bytes):
                     result[k] = v.hex()  # Convert bytes to hex string
                 elif v is None:
                     result[k] = ''  # Convert None to empty string
                 else:
-                    result[k] = json.dumps(v)  # JSON encode other types
+                    # Convert numpy types to native Python types
+                    try:
+                        import numpy as np
+                        if isinstance(v, (np.integer, np.floating)):
+                            v = v.item()  # Convert numpy scalar to Python type
+                        elif isinstance(v, np.ndarray):
+                            v = v.tolist()  # Convert numpy array to list
+                    except (ImportError, AttributeError):
+                        pass  # numpy not available or not a numpy type
+                    
+                    # Now handle native Python types
+                    if isinstance(v, (str, int, float)):
+                        result[k] = v
+                    else:
+                        result[k] = json.dumps(v)  # JSON encode other types
             return result
         return obj
 
@@ -185,10 +265,24 @@ class RedisMessage:
                 # Try to JSON parse, but if it fails, use the value as-is
                 # This handles both JSON-encoded values and plain strings (like hex)
                 if isinstance(v, str):
+                    # Handle numpy type string representations (e.g., 'np.float64(0.5)')
+                    # Extract the numeric value from strings like 'np.float64(0.5)'
+                    if v.startswith('np.') and '(' in v and ')' in v:
+                        try:
+                            # Extract the number inside parentheses
+                            start = v.find('(') + 1
+                            end = v.find(')')
+                            numeric_str = v[start:end]
+                            # Try to convert to float or int
+                            if '.' in numeric_str:
+                                decoded[key] = float(numeric_str)
+                            else:
+                                decoded[key] = int(numeric_str)
+                        except (ValueError, IndexError):
+                            decoded[key] = v  # Fallback to original string
                     # Hex strings (like audio data) are very long and not valid JSON
                     # Only try JSON parsing for short strings that might be JSON
-                    # For very long strings, skip the strip() check to avoid performance issues
-                    if len(v) > 1000:
+                    elif len(v) > 1000:
                         decoded[key] = v
                     elif not v.strip().startswith(('{', '[', '"')):
                         decoded[key] = v

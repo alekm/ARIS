@@ -42,3 +42,4 @@ Thumbs.db
 *.onnx
 data/models/
 CLAUDE.md
+SECURITY_REVIEW.md

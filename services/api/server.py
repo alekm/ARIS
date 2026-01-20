@@ -1182,7 +1182,8 @@ async def start_slot(slot_id: int, config: SlotConfig):
                 "port": config.port,
                 "frequency_hz": config.frequency_hz,
                 "mode": config.demod_mode, # 'USB', 'LSB', etc.
-                "password": config.password
+                "password": config.password,
+                "audio_endian": "big"  # KiwiSDR sends PCM in big-endian format
             })
         }
         # Publish to Control Stream
@@ -2183,4 +2184,7 @@ async def monitor_dashboard():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    api_host = os.getenv("API_HOST", "0.0.0.0")
+    api_port = int(os.getenv("API_PORT", "8000"))
+    logger.info(f"Starting API server on {api_host}:{api_port}")
+    uvicorn.run(app, host=api_host, port=api_port)

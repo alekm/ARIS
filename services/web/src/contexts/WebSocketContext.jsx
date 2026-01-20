@@ -2,20 +2,36 @@ import React, { createContext, useContext, useEffect, useState, useRef } from 'r
 
 const WebSocketContext = createContext({
     isConnected: false,
-    lastMessage: null,
     slotsData: [],
-    connectionError: null
+    connectionError: null,
+    subscribe: () => { }
 });
 
 export const WebSocketProvider = ({ children }) => {
     const [isConnected, setIsConnected] = useState(false);
-    const [lastMessage, setLastMessage] = useState(null);
     const [slotsData, setSlotsData] = useState([]);
     const [connectionError, setConnectionError] = useState(null);
     const socketRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
     const reconnectAttemptsRef = useRef(0);
     const isConnectingRef = useRef(false);
+
+    // Subscribers: { [messageType]: [callback1, callback2, ...] }
+    const listenersRef = useRef({});
+
+    const subscribe = (type, callback) => {
+        if (!listenersRef.current[type]) {
+            listenersRef.current[type] = [];
+        }
+        listenersRef.current[type].push(callback);
+
+        // Return unsubscribe function
+        return () => {
+            if (listenersRef.current[type]) {
+                listenersRef.current[type] = listenersRef.current[type].filter(cb => cb !== callback);
+            }
+        };
+    };
 
     // Connect logic
     useEffect(() => {
@@ -102,13 +118,23 @@ export const WebSocketProvider = ({ children }) => {
                 ws.onmessage = (event) => {
                     try {
                         const msg = JSON.parse(event.data);
-                        console.log("WS Message received:", msg.type, msg.data ? Object.keys(msg.data) : 'no data');
-                        setLastMessage(msg);
+                        // console.log("WS Message received:", msg.type, msg.data ? Object.keys(msg.data) : 'no data');
 
+                        // Handle internal state updates
                         if (msg.type === 'SLOT_UPDATE') {
                             setSlotsData(msg.data || []);
-                        } else if (msg.type === 'TRANSCRIPT') {
-                            console.log("Transcript received via WS:", msg.data?.text?.substring(0, 50));
+                        }
+
+                        // Dispatch to listeners
+                        const listeners = listenersRef.current[msg.type];
+                        if (listeners) {
+                            listeners.forEach(cb => {
+                                try {
+                                    cb(msg);
+                                } catch (err) {
+                                    console.error("Error in WS listener:", err);
+                                }
+                            });
                         }
                     } catch (e) {
                         console.warn("Failed to parse WS message:", e);
@@ -151,7 +177,7 @@ export const WebSocketProvider = ({ children }) => {
     }, []); // Empty deps - only run once on mount
 
     return (
-        <WebSocketContext.Provider value={{ isConnected, lastMessage, slotsData, connectionError }}>
+        <WebSocketContext.Provider value={{ isConnected, slotsData, connectionError, subscribe }}>
             {children}
         </WebSocketContext.Provider>
     );

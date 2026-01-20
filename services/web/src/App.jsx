@@ -9,16 +9,18 @@ import './App.css';
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const Layout = ({ children }) => {
+  const { isConnected, subscribe } = useWebSocket();
   const [stats, setStats] = useState(null);
-  const location = useLocation();
-  const { isConnected, lastMessage } = useWebSocket();
 
-  // Receive stats via WebSocket instead of polling
+  // Receive stats via WebSocket
   useEffect(() => {
-    if (lastMessage && lastMessage.type === 'STATS') {
-      setStats(lastMessage.data);
-    }
-  }, [lastMessage]);
+    const unsubscribe = subscribe('STATS', (msg) => {
+      if (msg.data) {
+        setStats(msg.data);
+      }
+    });
+    return unsubscribe;
+  }, [subscribe]);
 
   return (
     <div style={{

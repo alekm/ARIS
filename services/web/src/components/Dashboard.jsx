@@ -13,7 +13,7 @@ const Dashboard = () => {
         { id: 4, status: 'offline', activeConfig: null }
     ]);
     const [transcripts, setTranscripts] = useState([]);
-    const { slotsData, lastMessage, isConnected, connectionError } = useWebSocket();
+    const { slotsData, subscribe, isConnected, connectionError } = useWebSocket();
 
     // Initial Transcript Fetch (keep this for history)
     useEffect(() => {
@@ -31,50 +31,54 @@ const Dashboard = () => {
         fetchHistory();
     }, []);
 
-    // Handle transcript ID updates via WebSocket (after persistence)
+    // Sync slots with live SLOT_UPDATE data from WebSocket
     useEffect(() => {
-        if (lastMessage && lastMessage.type === 'TRANSCRIPT_ID_UPDATE') {
-            const idUpdate = lastMessage.data;
+        if (!slotsData || slotsData.length === 0) return;
+
+        setSlots(prevSlots => {
+            const prevMap = new Map(prevSlots.map(s => [s.id, s]));
+
+            return slotsData.map(serverSlot => {
+                const prev = prevMap.get(serverSlot.id) || {};
+                const prevConfig = prev.activeConfig || {};
+
+                const activeConfig = {
+                    host: serverSlot.host ?? prevConfig.host ?? '127.0.0.1',
+                    port: serverSlot.port ?? prevConfig.port ?? 8073,
+                    frequency_hz: serverSlot.frequency_hz ?? prevConfig.frequency_hz ?? 7200000,
+                    mode: serverSlot.mode ?? prevConfig.mode ?? 'USB',
+                    source_type: serverSlot.source_type ?? prevConfig.source_type ?? 'kiwi'
+                };
+
+                return {
+                    id: serverSlot.id,
+                    status: serverSlot.status || prev.status || 'offline',
+                    activeConfig
+                };
+            });
+        });
+    }, [slotsData]);
+
+    // Subscribe to WebSocket updates
+    useEffect(() => {
+        // Handle transcript ID updates
+        const unsubIdUpdate = subscribe('TRANSCRIPT_ID_UPDATE', (msg) => {
+            const idUpdate = msg.data;
             setTranscripts(prev => {
-                // Find transcript matching timestamp + text and update its ID
                 return prev.map(t => {
-                    if (!t.id && 
-                        Math.abs(t.timestamp - idUpdate.timestamp) < 0.1 && 
+                    if (!t.id &&
+                        Math.abs(t.timestamp - idUpdate.timestamp) < 0.1 &&
                         t.text === idUpdate.text) {
                         return { ...t, id: idUpdate.id };
                     }
                     return t;
                 });
             });
-        }
-    }, [lastMessage]);
+        });
 
-    // Handle Real-time Slot Updates via WebSocket
-    useEffect(() => {
-        if (slotsData && slotsData.length > 0) {
-            setSlots(prevSlots => prevSlots.map(slot => {
-                const active = slotsData.find(s => String(s.id) === String(slot.id));
-                if (active) {
-                    return {
-                        ...slot,
-                        status: active.status,
-                        activeConfig: {
-                            frequency_hz: active.frequency_hz,
-                            mode: active.mode,
-                            host: active.host,
-                            port: active.port
-                        }
-                    };
-                }
-                return slot;
-            }));
-        }
-    }, [slotsData]);
-
-    // Handle Real-time Transcripts
-    useEffect(() => {
-        if (lastMessage && lastMessage.type === 'TRANSCRIPT') {
-            const newT = lastMessage.data;
+        // Handle Real-time Transcripts
+        const unsubTranscript = subscribe('TRANSCRIPT', (msg) => {
+            const newT = msg.data;
             console.log("Received transcript via WebSocket:", newT);
             setTranscripts(prev => {
                 // Validate transcript data before adding
@@ -82,22 +86,26 @@ const Dashboard = () => {
                     console.warn("Invalid transcript data received:", newT);
                     return prev;
                 }
-                
+
                 // Deduplicate by timestamp + text (since we don't have ID from stream)
-                // Check if we already have this transcript (same timestamp and text)
-                const exists = prev.some(t => 
-                    t.timestamp === newT.timestamp && 
+                const exists = prev.some(t =>
+                    t.timestamp === newT.timestamp &&
                     t.text === newT.text
                 );
                 if (exists) {
-                    console.log("Transcript already exists, skipping");
+                    // console.log("Transcript already exists, skipping");
                     return prev;
                 }
                 console.log("Adding new transcript to feed");
                 return [newT, ...prev].slice(0, 50);
             });
-        }
-    }, [lastMessage]);
+        });
+
+        return () => {
+            if (unsubIdUpdate) unsubIdUpdate();
+            if (unsubTranscript) unsubTranscript();
+        };
+    }, [subscribe]);
 
     const handleStartSlot = async (id, config) => {
         try {
@@ -161,8 +169,8 @@ const Dashboard = () => {
             </div>
 
             <div style={{ height: '100%' }}>
-                <TranscriptFeed 
-                    transcripts={transcripts} 
+                <TranscriptFeed
+                    transcripts={transcripts}
                     onDelete={(transcriptId) => {
                         // Remove deleted transcript from local state
                         setTranscripts(prev => prev.filter(t => t.id !== transcriptId));

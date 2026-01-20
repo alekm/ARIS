@@ -77,7 +77,7 @@ class ImaAdpcmDecoder(object):
         return samples
 
 class KiwiSDRClient:
-    def __init__(self, host, port, password="", frequency_hz=14200000, mode="USB"):
+    def __init__(self, host, port, password="", frequency_hz=14200000, mode="USB", audio_endian="big"):
         self.host = host
         self.port = port
         self.password = password
@@ -86,13 +86,16 @@ class KiwiSDRClient:
         self.running = False
         self.ws = None
         self.sample_rate = 12000
+        self.audio_endian = audio_endian.lower()  # "big" or "little"
         
         # Audio Callback: async func(audio_bytes)
         self.on_audio_data = None 
         self.last_audio_time = time.time()
         
-        # Decoder
+        # Decoder - reset state on each connection
         self.decoder = ImaAdpcmDecoder()
+        # Reset decoder state to defaults (important for clean decoding)
+        self.decoder.preset(0, 0)
 
     async def connect(self):
         self.running = True
@@ -115,6 +118,9 @@ class KiwiSDRClient:
             ) as ws:
                 self.ws = ws
                 logger.info("WebSocket Connected")
+                
+                # Reset decoder state for new connection
+                self.decoder.preset(0, 0)
                 
                 # Handshake Sequence
                 logger.info("Sending Auth...")
@@ -181,12 +187,12 @@ class KiwiSDRClient:
         low, high = 300, 2700 
         if self.mode == "LSB": low, high = -2700, -300
         elif self.mode == "AM": low, high = -5000, 5000
-        elif self.mode == "CW": low, high = 400, 800
+        elif self.mode == "CW": low, high = -500, 500  # Symmetric around carrier (was 400-800, asymmetric)
         freq_khz = self.frequency_hz / 1000.0
         
         cmds = [
             f"SET mod={self.mode.lower()} low_cut={low} high_cut={high} freq={freq_khz:.2f}",
-            "SET compression=1", # ADPCM
+            "SET compression=1", # ADPCM (matches web client)
             "SET ident_user=ARIS_BOT",
             "SET keepalive",
             "SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=48",
@@ -240,17 +246,29 @@ class KiwiSDRClient:
                 raw_data = data[8:]
                 
                 # Check for Compression Flag (0x10)
-                if flags & 0x10:
+                is_compressed = bool(flags & 0x10)
+                
+                if is_compressed:
                     # ADPCM Decode
                     samples = self.decoder.decode(raw_data)
                     audio_bytes = samples.tobytes()
+                    logger.debug(f"Audio: ADPCM decoded, {len(audio_bytes)} bytes")
                 else:
-                    # PCM (Already Little Endian? or Big?)
-                    # If PCM, it is usually Big Endian (>h) per previous findings,
-                    # but ADPCM output is native (Little Endian on intel).
-                    audio_bytes = raw_data
+                    # Uncompressed PCM - handle endianness conversion
+                    # KiwiSDR typically sends PCM in big-endian format
+                    if self.audio_endian == "big":
+                        # Convert big-endian to little-endian (native for intel)
+                        # Unpack as big-endian 16-bit signed integers, repack as little-endian
+                        num_samples = len(raw_data) // 2
+                        samples = struct.unpack(f'>{num_samples}h', raw_data)
+                        audio_bytes = struct.pack(f'<{num_samples}h', *samples)
+                        logger.debug(f"Audio: PCM big-endian converted, {len(audio_bytes)} bytes")
+                    else:
+                        # Already little-endian, use as-is
+                        audio_bytes = raw_data
+                        logger.debug(f"Audio: PCM little-endian (as-is), {len(audio_bytes)} bytes")
 
                 await self.on_audio_data(audio_bytes, seq)
             except Exception as e:
-                logger.error(f"Binary decode error: {e}")
+                logger.error(f"Binary decode error: {e}", exc_info=True)
                 pass

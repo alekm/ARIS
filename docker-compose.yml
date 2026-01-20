@@ -130,6 +130,8 @@ services:
         condition: service_healthy
     volumes:
       - ./data/db:/data/db
+    ports:
+      - 8000:8000
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}

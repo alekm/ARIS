@@ -3,6 +3,7 @@
 Speech-to-Text Service
 Uses faster-whisper to transcribe audio chunks from Redis stream.
 Supports multiple concurrent audio sources (slots) via source_id tagging.
+Also supports CW (Morse code) decoding when mode is CW.
 """
 import os
 import sys
@@ -17,6 +18,7 @@ from scipy import signal as scipy_signal
 
 sys.path.insert(0, '/app')
 from shared.models import AudioChunk, Transcript, STREAM_AUDIO, STREAM_TRANSCRIPTS, RedisMessage
+from cw_decoder import CWDecoder
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
 log_level = getattr(logging, LOG_LEVEL, logging.WARNING)
@@ -36,6 +38,8 @@ class SlotState:
     silence_chunks_count: int = 0
     silence_chunks_needed: int = 0
     last_chunk_info: Dict = field(default_factory=dict)
+    mode: str = "USB"  # Track current mode (USB, LSB, AM, FM, CW)
+    cw_decoder: Optional[CWDecoder] = None  # CW decoder instance for this slot
 
 class STTService:
     """Speech-to-Text service using faster-whisper"""
@@ -80,6 +84,12 @@ class STTService:
         
         # State per slot
         self.slots: Dict[str, SlotState] = {}
+        
+        # CW decoder configuration
+        self.cw_enabled = os.getenv('CW_DECODER_ENABLED', 'true').lower() == 'true'
+        self.cw_tone_freq = float(os.getenv('CW_TONE_FREQ', '600.0'))
+        self.cw_wpm = float(os.getenv('CW_WPM', '20.0'))
+        self.cw_buffer_ms = int(os.getenv('CW_BUFFER_MS', '5000'))  # Buffer 5 seconds for CW
 
         # Create consumer group if it doesn't exist
         try:
@@ -121,8 +131,14 @@ class STTService:
         # Concatenate all chunks
         audio_data = np.concatenate(state.audio_buffer)
 
-        logger.info(f"[Slot {state.source_id}] Transcribing {state.buffer_duration_ms}ms ({len(audio_data)} samples)")
+        logger.info(f"[Slot {state.source_id}] Transcribing {state.buffer_duration_ms}ms ({len(audio_data)} samples), mode={state.mode}")
 
+        # Route to CW decoder if mode is CW
+        if state.mode == "CW" and self.cw_enabled:
+            # For CW, audio_data is already at original sample rate (no resampling)
+            return self.decode_cw_buffer(state, audio_data)
+        
+        # Otherwise use Whisper for speech
         try:
             # Whisper expects 16kHz audio
             # Audio should already be resampled to 16kHz in bytes_to_float32()
@@ -158,6 +174,37 @@ class STTService:
 
         except Exception as e:
             logger.error(f"[Slot {state.source_id}] Transcription error: {e}")
+            return None
+    
+    def decode_cw_buffer(self, state: SlotState, audio_data: np.ndarray):
+        """Decode CW (Morse code) from audio buffer"""
+        try:
+            # Initialize CW decoder for this slot if not exists
+            if state.cw_decoder is None:
+                # For CW, use original sample rate (12kHz from KiwiSDR) - no resampling needed!
+                # Resampling can introduce timing artifacts that mess up CW decoding
+                sample_rate = state.last_chunk_info.get('sample_rate', 12000)  # Get from chunk info
+                if sample_rate is None or sample_rate == 0:
+                    sample_rate = 12000  # Default to KiwiSDR rate
+                
+                state.cw_decoder = CWDecoder(
+                    sample_rate=sample_rate,
+                    tone_freq=self.cw_tone_freq,
+                    wpm=self.cw_wpm
+                )
+                logger.info(f"[Slot {state.source_id}] Initialized CW decoder at {sample_rate}Hz (no resampling)")
+            
+            # Decode CW
+            decoded_text, confidence = state.cw_decoder.decode(audio_data, auto_detect=True)
+            
+            if decoded_text:
+                logger.info(f"[Slot {state.source_id}] CW decoded: '{decoded_text}' (confidence: {confidence:.2f})")
+                return decoded_text, confidence
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"[Slot {state.source_id}] CW decoding error: {e}", exc_info=True)
             return None
 
     def is_noise_or_punctuation_only(self, text):
@@ -221,57 +268,92 @@ class STTService:
         logger.info(f"[Slot {source_id}] Published transcript")
 
     def process_chunk(self, chunk_data):
-        """Process a single audio chunk with VAD-triggered transcription"""
+        """Process a single audio chunk with VAD-triggered transcription (or CW decoding)"""
         try:
             chunk = RedisMessage.decode(chunk_data, AudioChunk)
             source_id = chunk.source_id
             
             # Get or create state
             if source_id not in self.slots:
-                self.slots[source_id] = SlotState(source_id=source_id)
+                self.slots[source_id] = SlotState(source_id=source_id, mode=chunk.mode)
             state = self.slots[source_id]
+            
+            # Update mode if it changed (e.g., user switched from USB to CW)
+            if state.mode != chunk.mode:
+                logger.info(f"[Slot {source_id}] Mode changed: {state.mode} -> {chunk.mode}")
+                state.mode = chunk.mode
+                # Reset CW decoder if mode changed (will be recreated with new settings)
+                if chunk.mode != "CW":
+                    state.cw_decoder = None
 
-            audio_float = self.bytes_to_float32(chunk.data, chunk.sample_rate)
-
-            # Silence calc init
-            if state.silence_chunks_needed == 0 and chunk.duration_ms > 0:
-                state.silence_chunks_needed = max(1, self.silence_duration_ms // chunk.duration_ms)
-
-            # Detect speech
-            has_speech = self.detect_speech(audio_float)
+            # For CW mode, don't resample - use original sample rate to preserve timing
+            if chunk.mode == "CW" and self.cw_enabled:
+                # Convert bytes directly without resampling
+                pcm = np.frombuffer(chunk.data, dtype=np.int16)
+                audio_float = pcm.astype(np.float32) / 32768.0
+                # Store original sample rate for CW decoder
+                state.last_chunk_info = {
+                    'frequency_hz': chunk.frequency_hz,
+                    'mode': chunk.mode,
+                    'buffer_duration_ms': state.buffer_duration_ms,
+                    'sample_rate': chunk.sample_rate  # Preserve original rate
+                }
+            else:
+                # For speech, resample to 16kHz for Whisper
+                audio_float = self.bytes_to_float32(chunk.data, chunk.sample_rate)
+                state.last_chunk_info = {
+                    'frequency_hz': chunk.frequency_hz,
+                    'mode': chunk.mode,
+                    'buffer_duration_ms': state.buffer_duration_ms
+                }
 
             # Add to buffer
             state.audio_buffer.append(audio_float)
             state.buffer_duration_ms += chunk.duration_ms
-            
-            # Update info
-            state.last_chunk_info = {
-                'frequency_hz': chunk.frequency_hz,
-                'mode': chunk.mode,
-                'buffer_duration_ms': state.buffer_duration_ms # For transcript duration
-            }
 
-            should_transcribe = False
-            transcribe_reason = ""
-
-            if has_speech:
-                if not state.in_speech:
-                    state.in_speech = True
-                state.silence_chunks_count = 0
+            # Different processing logic for CW vs speech
+            if chunk.mode == "CW" and self.cw_enabled:
+                # For CW: process on fixed intervals or buffer size
+                # CW is continuous, so we process every N seconds or when buffer is full
+                should_transcribe = False
+                transcribe_reason = ""
+                
+                if state.buffer_duration_ms >= self.cw_buffer_ms:
+                    should_transcribe = True
+                    transcribe_reason = "cw_buffer_ready"
+                elif state.buffer_duration_ms >= self.max_buffer_ms:
+                    should_transcribe = True
+                    transcribe_reason = "buffer_full"
             else:
-                if state.in_speech:
-                    state.silence_chunks_count += 1
-                    if state.silence_chunks_count >= state.silence_chunks_needed:
-                        should_transcribe = True
-                        transcribe_reason = "speech_ended"
-                        state.in_speech = False
-                        state.silence_chunks_count = 0
+                # For speech: use VAD-based processing
+                # Silence calc init
+                if state.silence_chunks_needed == 0 and chunk.duration_ms > 0:
+                    state.silence_chunks_needed = max(1, self.silence_duration_ms // chunk.duration_ms)
 
-            if state.buffer_duration_ms >= self.max_buffer_ms:
-                should_transcribe = True
-                transcribe_reason = "buffer_full"
-                state.in_speech = False
-                state.silence_chunks_count = 0
+                # Detect speech
+                has_speech = self.detect_speech(audio_float)
+
+                should_transcribe = False
+                transcribe_reason = ""
+
+                if has_speech:
+                    if not state.in_speech:
+                        state.in_speech = True
+                    state.silence_chunks_count = 0
+                else:
+                    if state.in_speech:
+                        state.silence_chunks_count += 1
+                        if state.silence_chunks_count >= state.silence_chunks_needed:
+                            should_transcribe = True
+                            transcribe_reason = "speech_ended"
+                            state.in_speech = False
+                            state.silence_chunks_count = 0
+
+                if state.buffer_duration_ms >= self.max_buffer_ms:
+                    should_transcribe = True
+                    transcribe_reason = "buffer_full"
+                    state.in_speech = False
+                    state.silence_chunks_count = 0
 
             if should_transcribe:
                 result = self.transcribe_buffer(state)
@@ -279,7 +361,7 @@ class STTService:
                     text, confidence = result
                     self.publish_transcript(text, confidence, state.last_chunk_info, source_id)
 
-                # Clear buffer
+                # Clear buffer (but keep CW decoder instance for next buffer)
                 state.audio_buffer = []
                 state.buffer_duration_ms = 0
 
