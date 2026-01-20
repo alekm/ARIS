@@ -296,30 +296,58 @@ docker compose logs -f stt
 
 ### Phase 2: SDR Integration ✅
 - [x] WebSocket client for KiwiSDR
-- [x] KiwiSDR integration (USB/LSB/AM/FM demodulation)
+- [x] KiwiSDR integration (USB/LSB/AM/FM/CW demodulation)
 - [x] Robust Connection Handling (Keepalive/Reconnect)
 - [x] Frequency & Mode Control
-- [ ] Multi-frequency monitoring
+- [x] Multi-slot Management (up to 4 concurrent receivers)
+- [x] Slot Persistence (configurations saved to database)
+- [ ] Multi-frequency monitoring (single slot, multiple frequencies)
 - [ ] Band-specific audio profiles
 
 ### Phase 3: Intelligence Features
 - [x] QSO Summarization (LLM)
+- [x] Multi-language Translation (auto-detect and translate to English)
 - [ ] Alert system (callsign/keyword notifications)
 - [ ] DX spot detection
 - [ ] Net detection and tracking
 - [ ] Historical trend analysis
 
-### Phase 4: Production Hardening
+### Phase 4: Web UI & Management ✅
+- [x] Web Dashboard with real-time WebSocket updates
+- [x] Transcript Management (view, search, delete)
+- [x] QSO List with retry functionality for failed summaries
+- [x] Real-time stats and monitoring
+- [x] Slot configuration via Web UI
+
+### Phase 5: Production Hardening
 - [x] Environment variable configuration (.env.example)
 - [x] Redis security (internal-only access)
 - [x] Health checks for services
 - [x] Configurable ports and settings
-- [x] Configurable ports and settings
 - [x] SQLite for long-term storage (PostgreSQL planned for scale)
-- [ ] Performance optimization
 - [ ] Performance optimization
 - [ ] Systemd service files
 - [ ] Additional monitoring and alerting
+
+## Future Goals
+
+### Better Hardware Support
+- Expand GPU acceleration beyond NVIDIA CUDA
+- Add ROCm support for AMD GPUs
+- Add Apple Silicon (Metal) support for M-series Macs
+- Enable ARIS to run on a wider range of hardware platforms
+
+### Multi-Endpoint Audio Combining
+- Monitor the same frequency from multiple SDR endpoints simultaneously
+- Combine audio streams or select best transcriptions via LLM
+- Improve transcription accuracy and reliability through redundancy
+- Handle cases where one endpoint has poor signal quality
+
+### Intelligent SDR Endpoint Selection
+- Maintain a list of available SDR endpoints (public or private)
+- Automatically measure and compare SNR across endpoints
+- Select endpoint(s) with best signal quality for each frequency
+- Improve overall system reliability and transcription quality
 
 ## Hardware Requirements
 
