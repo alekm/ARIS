@@ -1,6 +1,6 @@
 # ARIS 📻
 
-> **Status:** KiwiSDR connectivity, real-time transcription, and QSO summarization are fully functional.
+> **Status:** KiwiSDR connectivity, real-time transcription, and QSO summarization are fully functional. **Note:** CW Decoder is currently under active development and is not yet functional.
 
 **ARIS** (Amateur Radio Intelligence System) is a local-first, GPU-accelerated system for continuous monitoring of amateur radio bands. It captures audio from KiwiSDR receivers, performs real-time speech-to-text transcription, extracts callsigns, and generates AI-powered summaries of QSOs.
 
