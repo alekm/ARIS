@@ -112,7 +112,7 @@ Before deploying to production, ensure:
    - Consider backing up `./data/db`, `./data/redis`, and other data directories
 
 5. **GPU Configuration**
-   - Verify NVIDIA Docker runtime is configured: `docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi`
+   - Verify NVIDIA Docker runtime is configured: `docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 nvidia-smi`
    - STT service requires GPU access
 
 ### Deployment Commands
