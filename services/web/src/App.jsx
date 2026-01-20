@@ -11,20 +11,14 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 const Layout = ({ children }) => {
   const [stats, setStats] = useState(null);
   const location = useLocation();
-  const { isConnected } = useWebSocket();
+  const { isConnected, lastMessage } = useWebSocket();
 
+  // Receive stats via WebSocket instead of polling
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const statsRes = await fetch(`${API_BASE}/api/stats`);
-        const statsData = await statsRes.json();
-        setStats(statsData);
-      } catch (e) { console.error(e); }
-    };
-    fetchStats();
-    const int = setInterval(fetchStats, 5000); // Slower poll for global stats
-    return () => clearInterval(int);
-  }, []);
+    if (lastMessage && lastMessage.type === 'STATS') {
+      setStats(lastMessage.data);
+    }
+  }, [lastMessage]);
 
   return (
     <div style={{

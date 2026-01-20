@@ -54,6 +54,7 @@ services:
       - REDIS_PORT=${REDIS_PORT:-6379}
       - MODEL_SIZE=${MODEL_SIZE:-medium} # tiny, base, small, medium, large-v2, large-v3
       - DEVICE=${DEVICE:-cuda} # cuda or cpu
+      - ENABLE_TRANSLATION=${ENABLE_TRANSLATION:-false} # Enable auto-detect and translate to English
       - VAD_THRESHOLD=${VAD_THRESHOLD:-0.5}
       - ENERGY_THRESHOLD=${ENERGY_THRESHOLD:-0.01}
       - LOG_LEVEL=${LOG_LEVEL:-WARNING}

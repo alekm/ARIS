@@ -62,6 +62,11 @@ class STTService:
         )
         logger.info("Model loaded successfully")
 
+        # Translation configuration
+        self.enable_translation = os.getenv('ENABLE_TRANSLATION', 'false').lower() == 'true'
+        if self.enable_translation:
+            logger.info("Translation mode enabled: will auto-detect language and translate to English")
+        
         # VAD parameters
         self.vad_threshold = float(os.getenv('VAD_THRESHOLD', '0.5'))
         self.energy_threshold = float(os.getenv('ENERGY_THRESHOLD', '0.01'))
@@ -124,7 +129,8 @@ class STTService:
             # faster-whisper auto-detects sample rate from the audio data
             segments, info = self.model.transcribe(
                 audio_data,
-                language="en",
+                language=None if self.enable_translation else "en",
+                task="translate" if self.enable_translation else "transcribe",
                 vad_filter=True,
                 vad_parameters=dict(threshold=self.vad_threshold),
                 beam_size=5

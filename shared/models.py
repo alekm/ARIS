@@ -214,3 +214,4 @@ STREAM_TRANSCRIPTS = "transcripts"
 STREAM_CALLSIGNS = "callsigns"
 STREAM_QSOS = "qsos"
 STREAM_CONTROL = "control:audio-capture"  # Control commands for audio capture service
+STREAM_TRANSCRIPT_IDS = "transcript_ids"  # For ID updates after persistence

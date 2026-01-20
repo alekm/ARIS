@@ -35,7 +35,7 @@ sys.path.insert(0, '/app')
 from shared.models import (
     Transcript, Callsign, QSO, AudioChunk,
     STREAM_AUDIO, STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS,
-    STREAM_CONTROL, RedisMessage
+    STREAM_CONTROL, STREAM_TRANSCRIPT_IDS, RedisMessage
 )
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
@@ -185,11 +185,14 @@ async def broadcast_background_task():
     last_ids = {
         STREAM_TRANSCRIPTS: '$',
         STREAM_QSOS: '$',
-        STREAM_CALLSIGNS: '$'
+        STREAM_CALLSIGNS: '$',
+        STREAM_TRANSCRIPT_IDS: '$'
     }
     
     # Track previous slot states to only broadcast changes
     prev_slots = []
+    last_stats_time = 0
+    stats_interval = 5.0  # Broadcast stats every 5 seconds
     
     while True:
         try:
@@ -219,6 +222,55 @@ async def broadcast_background_task():
                     "data": current_slots
                 }))
                 prev_slots = current_slots
+            
+            # 1.5. Broadcast stats periodically
+            current_time = time.time()
+            if current_time - last_stats_time >= stats_interval:
+                try:
+                    # Get stats (reuse get_stats logic but inline to avoid circular dependency)
+                    audio_count = redis_client.xlen(STREAM_AUDIO)
+                    transcripts_count = redis_client.xlen(STREAM_TRANSCRIPTS)
+                    callsigns_count = redis_client.xlen(STREAM_CALLSIGNS)
+                    qsos_count = redis_client.xlen(STREAM_QSOS)
+                    
+                    recent_audio = None
+                    if audio_count > 0:
+                        try:
+                            messages = redis_client.xrevrange(STREAM_AUDIO, count=1)
+                            if messages:
+                                msg_id, msg_data = messages[0]
+                                chunk = RedisMessage.decode(msg_data, AudioChunk)
+                                recent_audio = {
+                                    "last_chunk_time": chunk.timestamp,
+                                    "last_chunk_datetime": datetime.fromtimestamp(chunk.timestamp).isoformat(),
+                                    "frequency_hz": chunk.frequency_hz,
+                                    "mode": chunk.mode,
+                                    "sample_rate": chunk.sample_rate,
+                                    "duration_ms": chunk.duration_ms,
+                                    "s_meter": getattr(chunk, 's_meter', 0.0),
+                                    "signal_strength_db": getattr(chunk, 'signal_strength_db', -150.0),
+                                    "squelch_open": getattr(chunk, 'squelch_open', True)
+                                }
+                        except Exception as e:
+                            logger.warning(f"Could not decode recent audio chunk for stats: {e}")
+                    
+                    stats = {
+                        "audio_chunks_count": audio_count,
+                        "transcripts_count": transcripts_count,
+                        "callsigns_count": callsigns_count,
+                        "qsos_count": qsos_count,
+                        "recent_audio": recent_audio,
+                        "audio_flowing": recent_audio is not None and (time.time() - recent_audio["last_chunk_time"]) < 5.0 if recent_audio else False,
+                        "uptime": "N/A"
+                    }
+                    
+                    await manager.broadcast(json.dumps({
+                        "type": "STATS",
+                        "data": stats
+                    }))
+                    last_stats_time = current_time
+                except Exception as e:
+                    logger.error(f"Error broadcasting stats: {e}")
 
             # 2. Check Streams
             # Use xread with small timeout (non-blocking basically)
@@ -294,6 +346,29 @@ async def broadcast_background_task():
                                     "context": callsign.context,
                                     "source_id": callsign.source_id
                                 }
+                                await manager.broadcast(json.dumps({
+                                    "type": msg_type,
+                                    "data": formatted_data
+                                }))
+                                continue
+                            elif stream == STREAM_TRANSCRIPT_IDS:
+                                # ID update after persistence
+                                msg_type = "TRANSCRIPT_ID_UPDATE"
+                                # msg_data from xread is a dict with bytes keys, decode it
+                                formatted_data = {}
+                                for k, v in msg_data.items():
+                                    key = k.decode('utf-8') if isinstance(k, bytes) else k
+                                    if key == 'id':
+                                        formatted_data['id'] = int(v) if isinstance(v, (bytes, str)) else v
+                                    elif key == 'timestamp':
+                                        formatted_data['timestamp'] = float(v) if isinstance(v, (bytes, str)) else v
+                                    elif key == 'text':
+                                        formatted_data['text'] = v.decode('utf-8') if isinstance(v, bytes) else v
+                                    elif key == 'frequency_hz':
+                                        formatted_data['frequency_hz'] = int(v) if isinstance(v, (bytes, str)) else v
+                                    elif key == 'mode':
+                                        formatted_data['mode'] = v.decode('utf-8') if isinstance(v, bytes) else v
+                                
                                 await manager.broadcast(json.dumps({
                                     "type": msg_type,
                                     "data": formatted_data

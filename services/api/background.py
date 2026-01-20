@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 from shared.models import (
     Transcript, Callsign, QSO,
-    STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS, RedisMessage
+    STREAM_TRANSCRIPTS, STREAM_CALLSIGNS, STREAM_QSOS, STREAM_TRANSCRIPT_IDS, RedisMessage
 )
 from shared.db import TranscriptModel, CallsignModel, QSOModel
 
@@ -110,6 +110,17 @@ class PersistenceWorker(threading.Thread):
                     language=obj.language
                 )
                 db.add(db_obj)
+                db.flush()  # Flush to get the ID
+                
+                # Publish ID update so WebSocket can broadcast it
+                id_update = {
+                    "id": db_obj.id,
+                    "timestamp": obj.timestamp,
+                    "text": obj.text,
+                    "frequency_hz": obj.frequency_hz,
+                    "mode": obj.mode
+                }
+                self.redis.xadd(STREAM_TRANSCRIPT_IDS, id_update, maxlen=1000)
                 
             elif stream == STREAM_CALLSIGNS:
                 obj = RedisMessage.decode(msg_data, Callsign)
