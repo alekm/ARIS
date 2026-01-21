@@ -15,6 +15,9 @@ RUN ln -sf /usr/bin/python3 /usr/bin/python
 # Create non-root user (use UID 1001 to avoid conflicts with base image's UID 1000)
 RUN groupadd -r -g 1001 aris && useradd -r -g aris -u 1001 aris
 
+# Ensure model cache directory exists and is writable by non-root user
+RUN mkdir -p /data/models && chown -R aris:aris /data
+
 # Install Python dependencies
 # Note: --break-system-packages is needed for Ubuntu 24.04 (PEP 668), safe in containers
 # Skip pip upgrade since it's installed via apt and can't be upgraded with pip itself
