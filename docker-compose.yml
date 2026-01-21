@@ -60,6 +60,9 @@ services:
       - STT_MIN_CONFIDENCE=${STT_MIN_CONFIDENCE:-0.4}
       - LOG_LEVEL=${LOG_LEVEL:-WARNING}
       - HF_TOKEN=${HF_TOKEN}
+      # Redirect Hugging Face caches/logs to writable volume
+      - HF_HUB_CACHE=/data/models
+      - XDG_CACHE_HOME=/data/cache
     deploy:
       resources:
         reservations:
