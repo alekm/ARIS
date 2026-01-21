@@ -79,6 +79,11 @@ class STTService:
         self.max_buffer_ms = int(os.getenv('MAX_BUFFER_MS', '30000'))
         self.min_buffer_ms = int(os.getenv('MIN_BUFFER_MS', '1000'))
 
+        # Minimum confidence threshold for publishing transcripts
+        # Transcripts below this value are dropped as too unreliable/noisy.
+        self.min_confidence = float(os.getenv('STT_MIN_CONFIDENCE', '0.4'))
+        logger.info(f"STT minimum confidence threshold set to {self.min_confidence:.2f}")
+
         self.running = False
         self.consumer_group = 'stt-service'
         self.consumer_name = f'stt-{os.getpid()}'
@@ -155,6 +160,7 @@ class STTService:
         
         # Otherwise use Whisper for speech
         try:
+            start_time = time.time()
             # Whisper expects 16kHz audio
             # Audio should already be resampled to 16kHz in bytes_to_float32()
             # faster-whisper auto-detects sample rate from the audio data
@@ -172,6 +178,21 @@ class STTService:
                 full_text += segment.text + " "
             full_text = full_text.strip()
             logger.info(f"[Slot {state.source_id}] RAW WHISPER OUTPUT: '{full_text}'")
+
+            latency_ms = (time.time() - start_time) * 1000.0
+            logger.info(f"[Slot {state.source_id}] Whisper transcription completed in {latency_ms:.1f}ms")
+
+            # Persist simple latency metrics to Redis for external monitoring
+            try:
+                metrics = {
+                    "last_latency_ms": f"{latency_ms:.1f}",
+                    "last_buffer_ms": str(state.buffer_duration_ms),
+                    "last_mode": state.mode,
+                    "last_updated": f"{time.time():.3f}",
+                }
+                self.redis.hset("metrics:stt", mapping=metrics)
+            except Exception as metrics_err:
+                logger.debug(f"Failed to update STT metrics: {metrics_err}")
 
             if full_text:
                 # Filter out transcripts that are just punctuation/whitespace
@@ -286,6 +307,14 @@ class STTService:
 
     def publish_transcript(self, text, confidence, chunk_info, source_id):
         """Publish transcript to Redis stream with source_id"""
+        # Drop very low-confidence transcripts to reduce noise and artifacts
+        if confidence < self.min_confidence:
+            logger.info(
+                f"[Slot {source_id}] Dropping low-confidence transcript "
+                f"(confidence={confidence:.2f} < threshold={self.min_confidence:.2f})"
+            )
+            return
+
         transcript = Transcript(
             timestamp=time.time(),
             frequency_hz=chunk_info['frequency_hz'],

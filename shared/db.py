@@ -67,6 +67,12 @@ class QSOModel(Base):
     transcript_ids_list = Column(Text) # Comma separated IDs (optional reference)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+# Additional indexes for common query patterns
+Index('idx_transcripts_freq_time', TranscriptModel.frequency_hz, TranscriptModel.timestamp)
+Index('idx_callsigns_freq_time', CallsignModel.frequency_hz, CallsignModel.timestamp)
+Index('idx_qsos_freq_start', QSOModel.frequency_hz, QSOModel.start_time)
+
 class SlotModel(Base):
     """DB model for Receiver Slot Configuration"""
     __tablename__ = 'slots'

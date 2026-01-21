@@ -19,7 +19,9 @@ body {
   background-color: var(--bg-dark);
   color: var(--color-text);
   font-family: var(--font-mono);
-  overflow: hidden;
+  /* Allow page to scroll on smaller viewports */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* Utility Classes */

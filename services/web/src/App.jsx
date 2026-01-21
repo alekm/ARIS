@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import Dashboard from './components/Dashboard';
 import QSOList from './components/QSOList';
+import PerformanceDashboard from './components/PerformanceDashboard';
 import { Terminal, Database } from 'lucide-react';
 import { useWebSocket } from './contexts/WebSocketContext';
 import { useAuth } from './contexts/AuthContext.jsx';
@@ -64,6 +65,11 @@ const Layout = ({ children }) => {
             <Link to="/qsos" style={{ textDecoration: 'none' }}>
               <button className={`btn ${location.pathname === '/qsos' ? 'btn-primary' : ''}`}>
                 QSO_LOGS
+              </button>
+            </Link>
+            <Link to="/perf" style={{ textDecoration: 'none' }}>
+              <button className={`btn ${location.pathname === '/perf' ? 'btn-primary' : ''}`}>
+                PERF_MONITOR
               </button>
             </Link>
             <button
@@ -216,6 +222,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/qsos" element={<QSOList />} />
+          <Route path="/perf" element={<PerformanceDashboard />} />
         </Routes>
       </Layout>
     </Router>

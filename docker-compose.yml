@@ -56,7 +56,8 @@ services:
       - DEVICE=${DEVICE:-cuda} # cuda or cpu
       - ENABLE_TRANSLATION=${ENABLE_TRANSLATION:-false} # Enable auto-detect and translate to English
       - VAD_THRESHOLD=${VAD_THRESHOLD:-0.5}
-      - ENERGY_THRESHOLD=${ENERGY_THRESHOLD:-0.01}
+      - ENERGY_THRESHOLD=${ENERGY_THRESHOLD:-0.01} # Minimum confidence for publishing transcripts (0.0-1.0)
+      - STT_MIN_CONFIDENCE=${STT_MIN_CONFIDENCE:-0.4}
       - LOG_LEVEL=${LOG_LEVEL:-WARNING}
       - HF_TOKEN=${HF_TOKEN}
     deploy:
@@ -130,8 +131,10 @@ services:
         condition: service_healthy
     volumes:
       - ./data/db:/data/db
-    ports:
-      - 8000:8000
+    # API port not exposed by default for security
+    # Uncomment below to expose API for troubleshooting:
+    # ports:
+    #   - 8000:8000
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}

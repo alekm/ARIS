@@ -175,14 +175,15 @@ Consolidated Summary (4-6 sentences covering main participants, key discussion p
 
     def _call_llm(self, prompt: str) -> str:
         """Helper to call the configured LLM backend"""
+        start_time = time.time()
         try:
             # Use system message to encourage direct, natural summaries
             system_msg = "You are a concise technical writer. Write summaries directly without introductions or meta-commentary."
-            
+            timeout_sec = float(os.getenv("LLM_TIMEOUT_SEC", "60"))
+
             if self.backend == 'ollama':
                 # Set host for ollama client if not default
                 if self.host and self.host != 'localhost:11434':
-                    import os
                     os.environ['OLLAMA_HOST'] = f"http://{self.host}"
                 response = ollama.chat(
                     model=self.model,
@@ -190,7 +191,8 @@ Consolidated Summary (4-6 sentences covering main participants, key discussion p
                         {'role': 'system', 'content': system_msg},
                         {'role': 'user', 'content': prompt}
                     ],
-                    options={'temperature': 0.3}
+                    options={'temperature': 0.3},
+                    timeout=timeout_sec,
                 )
                 result = response['message']['content'].strip()
             elif self.backend == 'openai':
@@ -200,12 +202,32 @@ Consolidated Summary (4-6 sentences covering main participants, key discussion p
                         {'role': 'system', 'content': system_msg},
                         {'role': 'user', 'content': prompt}
                     ],
-                    temperature=0.3
+                    temperature=0.3,
+                    timeout=timeout_sec,
                 )
                 result = response.choices[0].message.content.strip()
             else:
                 return f"Summary not available (unknown backend: {self.backend})"
-            
+
+            latency_ms = (time.time() - start_time) * 1000.0
+            logger.info(f"LLM summarization completed in {latency_ms:.1f}ms using backend={self.backend}")
+
+            # Persist simple latency metrics to Redis for external monitoring
+            try:
+                # Avoid circular import at module load time
+                r_host = os.getenv('REDIS_HOST', 'localhost')
+                r_port = int(os.getenv('REDIS_PORT', 6379))
+                r = redis.Redis(host=r_host, port=r_port, decode_responses=False)
+                metrics = {
+                    "last_latency_ms": f"{latency_ms:.1f}",
+                    "last_backend": self.backend,
+                    "last_model": self.model,
+                    "last_updated": f"{time.time():.3f}",
+                }
+                r.hset("metrics:summarizer", mapping=metrics)
+            except Exception as metrics_err:
+                logger.debug(f"Failed to update summarizer metrics: {metrics_err}")
+
             # Post-process: Remove common boilerplate prefixes
             boilerplate_prefixes = [
                 "Here's a summary",
@@ -219,11 +241,12 @@ Consolidated Summary (4-6 sentences covering main participants, key discussion p
                     # Remove prefix and any following punctuation/whitespace
                     result = result[len(prefix):].lstrip(' :\n-')
                     break
-            
+
             return result
 
         except Exception as e:
-            logger.error(f"LLM summarization failed: {e}")
+            latency_ms = (time.time() - start_time) * 1000.0
+            logger.error(f"LLM summarization failed after {latency_ms:.1f}ms: {e}")
             return f"[Summary failed: {str(e)}]"
 
 

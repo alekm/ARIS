@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y \
 # Create symlinks for python
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
+# Create non-root user (use UID 1001 to avoid conflicts with base image's UID 1000)
+RUN groupadd -r -g 1001 aris && useradd -r -g aris -u 1001 aris
+
 # Install Python dependencies
 # Note: --break-system-packages is needed for Ubuntu 24.04 (PEP 668), safe in containers
 COPY services/audio-capture/requirements.txt .
@@ -39,5 +42,11 @@ ENV SOAPY_SDR_MODULE_PATH=/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.8:/usr/lib
 
 COPY services/audio-capture/*.py /app/
 COPY shared/models.py /app/shared/
+
+# Set ownership of /app to aris user
+RUN chown -R aris:aris /app
+
+# Switch to non-root user
+USER aris
 
 CMD ["python", "capture.py"]

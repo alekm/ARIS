@@ -158,13 +158,18 @@ def require_admin(
     Allows access if EITHER:
       - A valid API_KEY Bearer token is provided (for automation/CLI), OR
       - There is an active signed admin session (for the web UI).
-    """
-    # Always enforce rate limiting when auth is required
-    check_rate_limit(request)
 
-    # 1) API key path for non-browser clients
-    if API_KEY and credentials and credentials.credentials == API_KEY:
-        return True
+    Rate limiting is applied only to API key clients so that the
+    interactive web UI is not throttled during normal use.
+    """
+    # 1) API key path for non-browser clients (with per-IP rate limiting)
+    if API_KEY and credentials:
+        # Apply rate limiting only for API key flows
+        check_rate_limit(request)
+        if credentials.credentials == API_KEY:
+            return True
+        # API key provided but incorrect
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
     # 2) Session-based admin auth for the web UI
     if ADMIN_PASSWORD:
@@ -1253,6 +1258,47 @@ async def get_stats():
             except Exception as e:
                 logger.warning(f"Could not decode recent audio chunk: {e}")
         
+        # Optional performance metrics from STT and summarizer services
+        stt_metrics = None
+        summarizer_metrics = None
+
+        def _decode_hash(raw: dict):
+            """Normalize Redis hash with possible bytes keys/values into str->str dict."""
+            if not raw:
+                return {}
+            decoded = {}
+            for k, v in raw.items():
+                key = k.decode("utf-8") if isinstance(k, bytes) else k
+                val = v.decode("utf-8") if isinstance(v, bytes) else v
+                decoded[key] = val
+            return decoded
+
+        try:
+            raw_stt = redis_client.hgetall("metrics:stt")
+            raw_stt = _decode_hash(raw_stt)
+            if raw_stt:
+                stt_metrics = {
+                    "last_latency_ms": float(raw_stt.get("last_latency_ms", "0") or 0.0),
+                    "last_buffer_ms": int(float(raw_stt.get("last_buffer_ms", "0") or 0.0)),
+                    "last_mode": raw_stt.get("last_mode"),
+                    "last_updated": float(raw_stt.get("last_updated", "0") or 0.0),
+                }
+        except Exception as e:
+            logger.debug(f"Error reading STT metrics: {e}")
+
+        try:
+            raw_sum = redis_client.hgetall("metrics:summarizer")
+            raw_sum = _decode_hash(raw_sum)
+            if raw_sum:
+                summarizer_metrics = {
+                    "last_latency_ms": float(raw_sum.get("last_latency_ms", "0") or 0.0),
+                    "last_backend": raw_sum.get("last_backend"),
+                    "last_model": raw_sum.get("last_model"),
+                    "last_updated": float(raw_sum.get("last_updated", "0") or 0.0),
+                }
+        except Exception as e:
+            logger.debug(f"Error reading summarizer metrics: {e}")
+
         stats = {
             "audio_chunks_count": audio_count,
             "transcripts_count": transcripts_count,
@@ -1260,7 +1306,9 @@ async def get_stats():
             "qsos_count": qsos_count,
             "recent_audio": recent_audio,
             "audio_flowing": recent_audio is not None and (time.time() - recent_audio["last_chunk_time"]) < 5.0 if recent_audio else False,
-            "uptime": "N/A"  # TODO: Track service uptime
+            "uptime": "N/A",  # TODO: Track service uptime
+            "stt_metrics": stt_metrics,
+            "summarizer_metrics": summarizer_metrics,
         }
         return stats
     except Exception as e:

@@ -40,3 +40,22 @@
 .read-the-docs {
   color: #888;
 }
+
+.stat-card {
+  border: 1px solid #333;
+  padding: 10px;
+  border-radius: 4px;
+  background: #050505;
+}
+
+.stat-label {
+  font-size: 0.7em;
+  color: #777;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 1.4em;
+  color: #fff;
+}
