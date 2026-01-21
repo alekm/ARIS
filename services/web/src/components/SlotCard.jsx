@@ -101,7 +101,6 @@ const SlotCard = ({ slot, onStart, onStop }) => {
                             <option value="USB">USB</option>
                             <option value="LSB">LSB</option>
                             <option value="AM">AM</option>
-                            <option value="CW">CW</option>
                         </select>
                     </div>
                 </div>

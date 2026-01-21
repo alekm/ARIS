@@ -39,6 +39,7 @@ class SlotState:
     silence_chunks_needed: int = 0
     last_chunk_info: Dict = field(default_factory=dict)
     mode: str = "USB"  # Track current mode (USB, LSB, AM, FM, CW)
+    sample_rate: int = 16000  # Current sample rate (updated from chunks)
     cw_decoder: Optional[CWDecoder] = None  # CW decoder instance for this slot
 
 class STTService:
@@ -126,12 +127,26 @@ class STTService:
     def transcribe_buffer(self, state: SlotState):
         """Transcribe accumulated audio buffer for a slot"""
         if state.buffer_duration_ms < self.min_buffer_ms:
+            logger.debug(f"[Slot {state.source_id}] Buffer too short: {state.buffer_duration_ms}ms < {self.min_buffer_ms}ms")
+            return None
+
+        # Validate buffer is not empty
+        if not state.audio_buffer or len(state.audio_buffer) == 0:
+            logger.warning(f"[Slot {state.source_id}] Empty audio buffer")
             return None
 
         # Concatenate all chunks
-        audio_data = np.concatenate(state.audio_buffer)
+        try:
+            audio_data = np.concatenate(state.audio_buffer)
+        except Exception as e:
+            logger.error(f"[Slot {state.source_id}] Error concatenating audio buffer: {e}")
+            return None
 
-        logger.info(f"[Slot {state.source_id}] Transcribing {state.buffer_duration_ms}ms ({len(audio_data)} samples), mode={state.mode}")
+        if len(audio_data) == 0:
+            logger.warning(f"[Slot {state.source_id}] Concatenated audio buffer is empty")
+            return None
+
+        logger.info(f"[Slot {state.source_id}] Transcribing {state.buffer_duration_ms}ms ({len(audio_data)} samples), mode={state.mode}, sample_rate={state.sample_rate}Hz")
 
         # Route to CW decoder if mode is CW
         if state.mode == "CW" and self.cw_enabled:
@@ -183,24 +198,47 @@ class STTService:
             if state.cw_decoder is None:
                 # For CW, use original sample rate (12kHz from KiwiSDR) - no resampling needed!
                 # Resampling can introduce timing artifacts that mess up CW decoding
-                sample_rate = state.last_chunk_info.get('sample_rate', 12000)  # Get from chunk info
+                sample_rate = state.sample_rate
                 if sample_rate is None or sample_rate == 0:
-                    sample_rate = 12000  # Default to KiwiSDR rate
+                    # Fallback: try to get from last_chunk_info, then default
+                    sample_rate = state.last_chunk_info.get('sample_rate', 12000)
+                    if sample_rate is None or sample_rate == 0:
+                        sample_rate = 12000  # Default to KiwiSDR rate
+                    logger.warning(f"[Slot {state.source_id}] Using fallback sample_rate={sample_rate}Hz from last_chunk_info")
                 
+                logger.info(f"[Slot {state.source_id}] Initializing CW decoder at {sample_rate}Hz (no resampling)")
                 state.cw_decoder = CWDecoder(
                     sample_rate=sample_rate,
                     tone_freq=self.cw_tone_freq,
                     wpm=self.cw_wpm
                 )
-                logger.info(f"[Slot {state.source_id}] Initialized CW decoder at {sample_rate}Hz (no resampling)")
+                logger.info(f"[Slot {state.source_id}] CW decoder initialized successfully")
+            
+            # Validate audio data
+            if audio_data is None or len(audio_data) == 0:
+                logger.warning(f"[Slot {state.source_id}] Empty audio buffer for CW decoding")
+                return None
+            
+            # Check if decoder sample rate matches current sample rate
+            if state.cw_decoder.sample_rate != state.sample_rate:
+                logger.warning(f"[Slot {state.source_id}] Sample rate mismatch: decoder={state.cw_decoder.sample_rate}Hz, current={state.sample_rate}Hz. Reinitializing decoder.")
+                state.cw_decoder = None
+                # Reinitialize with correct sample rate
+                state.cw_decoder = CWDecoder(
+                    sample_rate=state.sample_rate,
+                    tone_freq=self.cw_tone_freq,
+                    wpm=self.cw_wpm
+                )
             
             # Decode CW
+            logger.debug(f"[Slot {state.source_id}] Decoding CW: {len(audio_data)} samples at {state.sample_rate}Hz")
             decoded_text, confidence = state.cw_decoder.decode(audio_data, auto_detect=True)
             
             if decoded_text:
                 logger.info(f"[Slot {state.source_id}] CW decoded: '{decoded_text}' (confidence: {confidence:.2f})")
                 return decoded_text, confidence
             else:
+                logger.debug(f"[Slot {state.source_id}] CW decoder returned no text (likely no valid signal)")
                 return None
                 
         except Exception as e:
@@ -278,6 +316,10 @@ class STTService:
                 self.slots[source_id] = SlotState(source_id=source_id, mode=chunk.mode)
             state = self.slots[source_id]
             
+            # Update sample rate from chunk (always update to track current rate)
+            if chunk.sample_rate > 0:
+                state.sample_rate = chunk.sample_rate
+            
             # Update mode if it changed (e.g., user switched from USB to CW)
             if state.mode != chunk.mode:
                 logger.info(f"[Slot {source_id}] Mode changed: {state.mode} -> {chunk.mode}")
@@ -285,13 +327,16 @@ class STTService:
                 # Reset CW decoder if mode changed (will be recreated with new settings)
                 if chunk.mode != "CW":
                     state.cw_decoder = None
+                else:
+                    # Mode changed to CW - reset decoder to reinitialize with current sample rate
+                    state.cw_decoder = None
 
             # For CW mode, don't resample - use original sample rate to preserve timing
             if chunk.mode == "CW" and self.cw_enabled:
                 # Convert bytes directly without resampling
                 pcm = np.frombuffer(chunk.data, dtype=np.int16)
                 audio_float = pcm.astype(np.float32) / 32768.0
-                # Store original sample rate for CW decoder
+                # Store chunk info for transcript metadata
                 state.last_chunk_info = {
                     'frequency_hz': chunk.frequency_hz,
                     'mode': chunk.mode,
@@ -304,7 +349,8 @@ class STTService:
                 state.last_chunk_info = {
                     'frequency_hz': chunk.frequency_hz,
                     'mode': chunk.mode,
-                    'buffer_duration_ms': state.buffer_duration_ms
+                    'buffer_duration_ms': state.buffer_duration_ms,
+                    'sample_rate': chunk.sample_rate  # Also store for consistency
                 }
 
             # Add to buffer

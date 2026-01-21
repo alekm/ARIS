@@ -6,6 +6,7 @@ import redis
 import threading
 import time
 import yaml
+import numpy as np
 
 from kiwi_client import KiwiSDRClient
 
@@ -55,6 +56,9 @@ class CaptureThread(threading.Thread):
         logger.info(f"Slot-{self.slot_id} - Thread Stopped")
 
     async def _lifecycle(self):
+        # Start control command checker task
+        control_task = None
+        
         while self.running:
             try:
                 # Reset retry count on successful connection attempt
@@ -81,6 +85,10 @@ class CaptureThread(threading.Thread):
                 # Attach Audio Callback
                 self.client.on_audio_data = self._handle_audio
                 
+                # Start control command checker if not already running
+                if control_task is None or control_task.done():
+                    control_task = asyncio.create_task(self._check_control_commands())
+                
                 # Connect (Blocking until disconnect)
                 await self.client.connect()
                 
@@ -106,6 +114,13 @@ class CaptureThread(threading.Thread):
             if len(audio_bytes) % 2 != 0:
                 audio_bytes = audio_bytes[:-1]
             
+            # Calculate RMS for debugging (especially for CW)
+            if len(audio_bytes) >= 2:
+                samples = np.frombuffer(audio_bytes, dtype=np.int16)
+                rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0
+                if self.client.mode == "CW":
+                    logger.info(f"Slot-{self.slot_id} Audio RMS: {rms:.6f} (samples: {len(samples)})")
+            
             # Calculate filter cutoffs based on mode
             low_cut = 300
             high_cut = 2700
@@ -116,8 +131,8 @@ class CaptureThread(threading.Thread):
                 low_cut = -5000
                 high_cut = 5000
             elif self.client.mode == "CW":
-                low_cut = -500  # Symmetric around carrier (was 400, asymmetric)
-                high_cut = 500  # Symmetric around carrier (was 800, asymmetric)
+                low_cut = 300  # Asymmetric, positive side only (matches kiwiclient default)
+                high_cut = 700  # Asymmetric, positive side only (matches kiwiclient default)
             
             # Match Shared Model (AudioChunk) Protocol
             payload = {
@@ -144,6 +159,64 @@ class CaptureThread(threading.Thread):
             
         except Exception as e:
             logger.error(f"Slot-{self.slot_id} - Audio Publish Error: {e}", exc_info=True)
+
+    async def _check_control_commands(self):
+        """Check for frequency/mode update commands for this slot"""
+        last_id = '$'
+        loop = asyncio.get_event_loop()
+        
+        while self.running:
+            try:
+                # Run blocking Redis call in executor to avoid blocking event loop
+                messages = await loop.run_in_executor(
+                    None,
+                    lambda: self.redis.xread({STREAM_CONTROL: last_id}, count=10, block=1000)
+                )
+                
+                if messages:
+                    for stream, msgs in messages:
+                        for msg_id, data in msgs:
+                            last_id = msg_id
+                            
+                            # Only process commands for this slot
+                            slot_id = data.get(b'slot_id', data.get('slot_id'))
+                            if slot_id and str(slot_id) != self.slot_id:
+                                continue
+                            
+                            cmd = data.get(b'command', data.get('command'))
+                            if isinstance(cmd, bytes):
+                                cmd = cmd.decode('utf-8', errors='ignore')
+                            
+                            if cmd == 'set_frequency' and self.client and self.client.running:
+                                try:
+                                    freq_hz_str = data.get(b'frequency_hz', data.get('frequency_hz'))
+                                    if isinstance(freq_hz_str, bytes):
+                                        freq_hz_str = freq_hz_str.decode('utf-8', errors='ignore')
+                                    frequency_hz = int(freq_hz_str)
+                                    
+                                    logger.info(f"Slot-{self.slot_id} - Received frequency update: {frequency_hz} Hz")
+                                    self.config['frequency_hz'] = frequency_hz
+                                    await self.client.set_frequency(frequency_hz)
+                                except Exception as e:
+                                    logger.error(f"Slot-{self.slot_id} - Error updating frequency: {e}")
+                            
+                            elif cmd == 'set_mode' and self.client and self.client.running:
+                                try:
+                                    mode_str = data.get(b'mode', data.get('mode'))
+                                    if isinstance(mode_str, bytes):
+                                        mode_str = mode_str.decode('utf-8', errors='ignore')
+                                    
+                                    logger.info(f"Slot-{self.slot_id} - Received mode update: {mode_str}")
+                                    self.config['mode'] = mode_str
+                                    await self.client.set_mode(mode_str)
+                                except Exception as e:
+                                    logger.error(f"Slot-{self.slot_id} - Error updating mode: {e}")
+                            
+            except Exception as e:
+                # Don't log timeout errors (normal when no messages)
+                if "timeout" not in str(e).lower():
+                    logger.debug(f"Slot-{self.slot_id} - Control check error: {e}")
+                await asyncio.sleep(1)
 
     def _update_heartbeat(self):
         """Update Redis with current status"""

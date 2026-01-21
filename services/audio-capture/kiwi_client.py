@@ -158,6 +158,49 @@ class KiwiSDRClient:
         if self.ws:
             await self.ws.close()
 
+    async def set_frequency(self, frequency_hz: int):
+        """Update frequency dynamically without reconnecting"""
+        if not self.ws or not self.running:
+            logger.warning("Cannot set frequency: not connected")
+            return
+        
+        self.frequency_hz = frequency_hz
+        freq_khz = frequency_hz / 1000.0
+        
+        # Send frequency update command
+        cmd = f"SET freq={freq_khz:.4f}"
+        logger.info(f"[KiwiSDR] Frequency update: {frequency_hz} Hz ({freq_khz:.4f} kHz)")
+        logger.info(f"[KiwiSDR] >> {cmd}")
+        await self.ws.send(cmd)
+        await asyncio.sleep(0.01)  # Small delay for command processing
+
+    async def set_mode(self, mode: str):
+        """Update demodulation mode and filters dynamically without reconnecting"""
+        if not self.ws or not self.running:
+            logger.warning("Cannot set mode: not connected")
+            return
+        
+        self.mode = mode.upper()
+        
+        # Calculate filter cutoffs based on mode
+        low, high = 300, 2700 
+        if self.mode == "LSB": low, high = -2700, -300
+        elif self.mode == "AM": low, high = -5000, 5000
+        elif self.mode == "CW": low, high = 300, 700
+        
+        freq_khz = self.frequency_hz / 1000.0
+        
+        # Send mode and filter update commands
+        cmds = [
+            f"SET mod={self.mode.lower()} low_cut={low} high_cut={high}",
+        ]
+        
+        logger.info(f"[KiwiSDR] Mode update: {self.mode}, filter={low}-{high}Hz")
+        for cmd in cmds:
+            logger.info(f"[KiwiSDR] >> {cmd}")
+            await self.ws.send(cmd)
+            await asyncio.sleep(0.01)  # Small delay for command processing
+
     async def _send_auth(self):
         auth_msg = f"SET auth t=kiwi p={self.password}"
         logger.debug(f">> {auth_msg}")
@@ -187,24 +230,38 @@ class KiwiSDRClient:
         low, high = 300, 2700 
         if self.mode == "LSB": low, high = -2700, -300
         elif self.mode == "AM": low, high = -5000, 5000
-        elif self.mode == "CW": low, high = -500, 500  # Symmetric around carrier (was 400-800, asymmetric)
+        elif self.mode == "CW": low, high = 300, 700  # Asymmetric, positive side only (matches kiwiclient default)
         freq_khz = self.frequency_hz / 1000.0
         
+        # Log exact frequency being sent for debugging
+        # Note: KiwiSDR applies a BFO offset (typically 500 Hz) in CW mode, which shifts the signal
+        # to an audible tone. The frequency sent here is the center frequency; the actual audio tone
+        # will appear at the BFO offset frequency (e.g., 500 Hz) in the demodulated audio.
+        logger.info(f"[KiwiSDR] Config: mode={self.mode}, freq_hz={self.frequency_hz}, freq_khz={freq_khz:.6f}, filter={low}-{high}Hz")
+        
+        # AGC settings: Match kiwiclient defaults exactly
+        # kiwiclient default: set_agc(on=True) = agc=1 hang=0 thresh=-100 slope=6 decay=1000 gain=50
+        # Use same gain for all modes - let AGC handle level differences
+        agc_cmd = "SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50"
+        
+        # Command order matters: enable sound first, then compression, then configure mode/filters
         cmds = [
-            f"SET mod={self.mode.lower()} low_cut={low} high_cut={high} freq={freq_khz:.2f}",
-            "SET compression=1", # ADPCM (matches web client)
+            "SET snd=1",  # Enable sound streaming FIRST (required before other audio settings)
+            "SET compression=1", # ADPCM (matches web client - required for audio stream)
+            f"SET mod={self.mode.lower()} low_cut={low} high_cut={high} freq={freq_khz:.4f}",
             "SET ident_user=ARIS_BOT",
             "SET keepalive",
-            "SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=48",
+            agc_cmd,
             "SET squelch=0 max=0",
             "SET genattn=0",
-            "SET gen=0 mix=-1",
-            "SET snd=1" # Keep enabled
+            "SET gen=0 mix=-1"
         ]
         
         for cmd in cmds:
-            logger.debug(f">> {cmd}")
+            logger.info(f"[KiwiSDR] >> {cmd}")  # Changed to INFO so we can see what's being sent
             await self.ws.send(cmd)
+            # Small delay to ensure commands are processed in order
+            await asyncio.sleep(0.01)
 
         if not hasattr(self, 'keepalive_task') or not self.keepalive_task or self.keepalive_task.done():
             logger.info("Starting Keepalive Loop")

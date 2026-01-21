@@ -1,6 +1,6 @@
 # ARIS 📻
 
-> **Status:** KiwiSDR connectivity, real-time transcription, and QSO summarization are fully functional. **Note:** CW Decoder is currently under active development and is not yet functional.
+> **Status:** KiwiSDR connectivity, real-time transcription, and QSO summarization are fully functional. **Note:** CW mode is currently experimental and disabled in the web UI.
 
 **ARIS** (Amateur Radio Intelligence System) is a local-first, GPU-accelerated system for continuous monitoring of amateur radio bands. It captures audio from KiwiSDR receivers, performs real-time speech-to-text transcription, extracts callsigns, and generates AI-powered summaries of QSOs.
 
@@ -18,7 +18,7 @@ ARIS is a local-first, GPU-accelerated system for continuous monitoring of amate
 - **KiwiSDR Integration** with robust passive-handshake connection
 - **Web Dashboard** with real-time WebSocket updates for live monitoring
 - **Multi-slot Management** - Configure and monitor up to 4 receiver slots via Web UI
-- **Control** of Frequency and Mode (LSB/USB/AM/CW) directly from UI
+- **Control** of Frequency and Mode (LSB/USB/AM) directly from UI
 - **Transcript Management** - View, search, and delete transcripts from the Web UI
 - **Slot Persistence** - Slot configurations saved to database and automatically restored on restart
 - **Local-only** - no cloud dependencies
@@ -296,7 +296,7 @@ docker compose logs -f stt
 
 ### Phase 2: SDR Integration ✅
 - [x] WebSocket client for KiwiSDR
-- [x] KiwiSDR integration (USB/LSB/AM/FM/CW demodulation)
+- [x] KiwiSDR integration (USB/LSB/AM demodulation)
 - [x] Robust Connection Handling (Keepalive/Reconnect)
 - [x] Frequency & Mode Control
 - [x] Multi-slot Management (up to 4 concurrent receivers)

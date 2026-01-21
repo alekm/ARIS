@@ -47,6 +47,14 @@ class CWDecoder:
                  tone_freq: float = 600.0,
                  wpm: float = 20.0,
                  threshold_ratio: float = 0.4):
+        # Validate inputs
+        if sample_rate <= 0:
+            raise ValueError(f"Invalid sample_rate: {sample_rate} (must be > 0)")
+        if tone_freq <= 0 or tone_freq >= sample_rate / 2:
+            raise ValueError(f"Invalid tone_freq: {tone_freq}Hz (must be > 0 and < Nyquist {sample_rate/2}Hz)")
+        if wpm <= 0 or wpm > 100:
+            raise ValueError(f"Invalid wpm: {wpm} (must be > 0 and <= 100)")
+        
         self.sample_rate = sample_rate
         self.tone_freq = tone_freq
         self.wpm = wpm
@@ -63,14 +71,22 @@ class CWDecoder:
         bandwidth = 200  # Wider bandwidth to capture signal variations
         low = max(1, tone_freq - bandwidth/2)
         high = min(sample_rate/2 - 1, tone_freq + bandwidth/2)
-        self.b, self.a = signal.butter(4, [low, high], btype='band', fs=sample_rate)
+        
+        # Validate filter range
+        if low >= high:
+            raise ValueError(f"Invalid filter range: low={low}Hz >= high={high}Hz (tone_freq={tone_freq}Hz, sample_rate={sample_rate}Hz)")
+        
+        try:
+            self.b, self.a = signal.butter(4, [low, high], btype='band', fs=sample_rate)
+        except Exception as e:
+            raise ValueError(f"Failed to create bandpass filter: {e} (low={low}Hz, high={high}Hz, sample_rate={sample_rate}Hz)")
         
         # Frequency smoothing: track recent detections to avoid filter churn
         self._detected_freqs = []  # Recent frequency detections
         self._max_freq_history = 5  # Keep last 5 detections
         self._filter_update_threshold = 80.0  # Hz - only update if smoothed freq changes by this much
         
-        logger.info(f"CW Decoder initialized: {tone_freq}Hz, {wpm}WPM, threshold={threshold_ratio}")
+        logger.info(f"CW Decoder initialized: {tone_freq}Hz, {wpm}WPM, threshold={threshold_ratio}, sample_rate={sample_rate}Hz, filter={low:.1f}-{high:.1f}Hz")
     
     def detect_tone_frequency(self, audio: np.ndarray) -> float:
         """Auto-detect the CW tone frequency using FFT peak detection."""
@@ -103,6 +119,9 @@ class CWDecoder:
     def filter_audio(self, audio: np.ndarray) -> np.ndarray:
         """Apply bandpass filter to isolate CW tone."""
         try:
+            if len(audio) == 0:
+                logger.warning("Empty audio array, cannot filter")
+                return audio
             filtered = signal.filtfilt(self.b, self.a, audio)
             return filtered
         except Exception as e:

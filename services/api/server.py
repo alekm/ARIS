@@ -1080,8 +1080,8 @@ async def root():
                     if (stats.recent_audio) {
                         const freq = stats.recent_audio.frequency_hz;
                         const mode = stats.recent_audio.mode;
-                        const freqMHz = (freq / 1000000).toFixed(3);
-                        document.getElementById('current-settings').textContent = `${freqMHz} MHz (${mode})`;
+                        const freqKHz = (freq / 1000).toFixed(2);
+                        document.getElementById('current-settings').textContent = `${freqKHz} kHz (${mode})`;
 
                         // Update the frequency input with current value (in kHz)
                         document.getElementById('frequency').value = (freq / 1000).toFixed(3);
@@ -2076,7 +2076,7 @@ async def monitor_dashboard():
                             </div>
                         </div>
                         ${stats.recent_audio ? `
-                            <p><strong>Current Frequency:</strong> ${(stats.recent_audio.frequency_hz / 1000000).toFixed(3)} MHz (${stats.recent_audio.mode})</p>
+                            <p><strong>Current Frequency:</strong> ${(stats.recent_audio.frequency_hz / 1000).toFixed(2)} kHz (${stats.recent_audio.mode})</p>
                             <p><strong>Last Chunk:</strong> ${stats.recent_audio.last_chunk_datetime}</p>
                             <p><strong>Sample Rate:</strong> ${stats.recent_audio.sample_rate} Hz</p>
                         ` : '<p class="status-warning">No recent audio data</p>'}
@@ -2095,7 +2095,7 @@ async def monitor_dashboard():
                     
                     if (stats.recent_audio) {
                         const audioHtml = `
-                            <p><strong>Frequency:</strong> ${(stats.recent_audio.frequency_hz / 1000000).toFixed(3)} MHz (${stats.recent_audio.mode})</p>
+                            <p><strong>Frequency:</strong> ${(stats.recent_audio.frequency_hz / 1000).toFixed(2)} kHz (${stats.recent_audio.mode})</p>
                             <p><strong>Last Update:</strong> ${stats.recent_audio.last_chunk_datetime}</p>
                             <div class="audio-player">
                                 <audio controls>
@@ -2129,7 +2129,7 @@ async def monitor_dashboard():
                             <div class="transcript-text">${escapeHtml(t.text)}</div>
                             <div class="transcript-meta">
                                 ${new Date(t.datetime).toLocaleString()} | 
-                                ${(t.frequency_hz / 1000000).toFixed(3)} MHz ${t.mode} | 
+                                ${(t.frequency_hz / 1000).toFixed(2)} kHz ${t.mode} | 
                                 Confidence: ${(t.confidence * 100).toFixed(0)}% | 
                                 <a href="/api/audio/chunk/${t.timestamp.toString().replace('.', '-')}" target="_blank">🎵 Audio</a>
                             </div>
