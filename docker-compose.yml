@@ -139,13 +139,17 @@ services:
       - API_PORT=8000
       - API_HOST=${API_HOST:-0.0.0.0}
       - LOG_LEVEL=${LOG_LEVEL:-WARNING}
+      - ARIS_ADMIN_PASSWORD=${ARIS_ADMIN_PASSWORD}
+      - ARIS_SECRET_KEY=${ARIS_SECRET_KEY}
+      # Optional API key for automation clients
+      - API_KEY=${API_KEY:-}
     restart: unless-stopped
     healthcheck:
       test:
         - CMD
         - curl
         - -f
-        - http://localhost:8000/api/stats
+        - http://localhost:8000/api/health
       interval: 30s
       timeout: 10s
       retries: 3

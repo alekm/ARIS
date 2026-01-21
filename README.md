@@ -45,8 +45,8 @@ flowchart LR
 2. **stt** - Speech-to-text using faster-whisper on GPU
 3. **callsign-extractor** - Regex + phonetic callsign detection
 4. **summarizer** - LLM-based QSO summarization
-5. **api** - FastAPI web server with REST API and WebSocket support
-6. **web** - React-based Web UI with real-time updates
+5. **api** - FastAPI web server with REST API, WebSocket, and authentication
+6. **web** - React-based Web UI with real-time updates (protected by login)
 7. **redis** - Message broker and data bus
 
 ## Quick Start
@@ -82,6 +82,12 @@ docker compose up -d
 open http://localhost:3000
 # API is available at http://localhost:8000
 ```
+
+5. Configure authentication:
+- Edit `.env` and set:
+  - `ARIS_ADMIN_PASSWORD` – shared admin password for the Web UI
+  - `ARIS_SECRET_KEY` – long random string for signing session cookies
+- (Optional) Set `API_KEY` if you want headless scripts/CLI tools to access the API with a Bearer token.
 
 ## Deployment
 
@@ -139,6 +145,7 @@ docker compose down -v
 Configuration is managed via environment variables in `.env`:
 
 - **API Configuration**: `API_PORT`, `API_HOST`
+- **API Authentication**: `ARIS_ADMIN_PASSWORD`, `ARIS_SECRET_KEY`, `API_KEY` (optional for headless clients)
 - **Redis**: `REDIS_HOST`, `REDIS_PORT` (defaults work for Docker Compose)
 - **Audio Capture**: Environment variables (`MODE`, `KIWI_HOST`, etc.) are optional and only used for backward compatibility auto-start of slot 0. **Slots are configured via the Web UI or API endpoints** (see below).
 - **STT**: `MODEL_SIZE`, `DEVICE`, `ENABLE_TRANSLATION`, `VAD_THRESHOLD`, `ENERGY_THRESHOLD`
@@ -223,20 +230,22 @@ LLM_HOST=host.docker.internal:5000  # text-generation-webui default port
 LLM_API_KEY=not-needed
 ```
 
-## API Endpoints
+## API Endpoints (secured)
 
-- `GET /` - Web UI
-- `GET /docs` - Interactive API documentation
-- `GET /api/stats` - System statistics
-- `GET /api/transcripts?limit=50&frequency=7200000` - Recent transcripts
-- `DELETE /api/transcripts/{transcript_id}` - Delete a transcript
-- `GET /api/callsigns?limit=50&callsign=W1AW` - Callsign detections
-- `GET /api/qsos?limit=20` - QSO summaries
-- `GET /api/search/callsign/{callsign}` - Search by callsign
-- `GET /api/slots` - Get active slot status
-- `POST /api/slots/{slot_id}/start` - Start/configure a slot
-- `POST /api/slots/{slot_id}/stop` - Stop a slot
-- `WS /ws` - WebSocket endpoint for real-time updates (transcripts, slots, QSOs)
+- `GET /` - Legacy HTML control/status page (requires login)
+- `GET /docs` - Interactive API documentation (behind auth when accessed via browser)
+- `GET /api/health` - Health check (unauthenticated)
+- `GET /api/stats` - System statistics (requires login or valid API key)
+- `GET /api/transcripts?limit=50&frequency=7200000` - Recent transcripts (requires login/API key)
+- `DELETE /api/transcripts/{transcript_id}` - Delete a transcript (requires login/API key)
+- `GET /api/callsigns?limit=50&callsign=W1AW` - Callsign detections (requires login/API key)
+- `GET /api/qsos?limit=20` - QSO summaries (requires login/API key)
+- `GET /api/search/callsign/{callsign}` - Search by callsign (requires login/API key)
+- `GET /api/slots` - Get active slot status (requires login/API key)
+- `POST /api/slots/{slot_id}/start` - Start/configure a slot (requires login/API key)
+- `POST /api/slots/{slot_id}/stop` - Stop a slot (requires login/API key)
+- `POST /api/login` / `POST /api/logout` / `GET /api/me` - Web UI authentication
+- `WS /ws` - WebSocket endpoint for real-time updates (requires logged-in session)
 
 ## Development
 

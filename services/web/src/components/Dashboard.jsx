@@ -19,7 +19,9 @@ const Dashboard = () => {
     useEffect(() => {
         const fetchHistory = async () => {
             try {
-                const res = await fetch(`${API_BASE}/api/transcripts?limit=50`);
+                const res = await fetch(`${API_BASE}/api/transcripts?limit=50`, {
+                    credentials: 'include',
+                });
                 if (res.ok) {
                     const data = await res.json();
                     setTranscripts(data);
@@ -112,6 +114,7 @@ const Dashboard = () => {
             await fetch(`${API_BASE}/api/slots/${id}/start`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify(config)
             });
             setSlots(prev => prev.map(s => s.id === id ? { ...s, status: 'online' } : s));
@@ -123,7 +126,8 @@ const Dashboard = () => {
     const handleStopSlot = async (id) => {
         try {
             await fetch(`${API_BASE}/api/slots/${id}/stop`, {
-                method: 'POST'
+                method: 'POST',
+                credentials: 'include',
             });
             setSlots(prev => prev.map(s => s.id === id ? { ...s, status: 'offline' } : s));
         } catch (e) {

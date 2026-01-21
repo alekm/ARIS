@@ -13,7 +13,9 @@ const QSOList = () => {
         const fetchQsos = async () => {
             try {
                 // setLoading(true); // Don't block UI on refresh
-                const res = await fetch(`${API_BASE}/api/qsos?limit=50`);
+                const res = await fetch(`${API_BASE}/api/qsos?limit=50`, {
+                    credentials: 'include',
+                });
                 if (!res.ok) {
                     throw new Error(`HTTP ${res.status}`);
                 }
@@ -47,7 +49,10 @@ const QSOList = () => {
         if (!window.confirm("Delete this record permanently?")) return;
 
         try {
-            const res = await fetch(`${API_BASE}/api/qsos/${sessionId}`, { method: 'DELETE' });
+            const res = await fetch(`${API_BASE}/api/qsos/${sessionId}`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
             if (res.ok) {
                 setQsos(prev => prev.filter(q => q.session_id !== sessionId));
                 if (selectedQSO && selectedQSO.session_id === sessionId) {
@@ -68,7 +73,10 @@ const QSOList = () => {
         if (!window.confirm("Regenerate summary for this QSO?")) return;
 
         try {
-            const res = await fetch(`${API_BASE}/api/qsos/${sessionId}/regenerate`, { method: 'POST' });
+            const res = await fetch(`${API_BASE}/api/qsos/${sessionId}/regenerate`, {
+                method: 'POST',
+                credentials: 'include',
+            });
             if (res.ok) {
                 const data = await res.json();
                 // Update the QSO in the list
@@ -144,7 +152,9 @@ const QSOList = () => {
                                     onClick={async () => {
                                         setSelectedQSO(q); // Show immediate with summary only
                                         try {
-                                            const res = await fetch(`${API_BASE}/api/qsos/${q.session_id}`);
+                                            const res = await fetch(`${API_BASE}/api/qsos/${q.session_id}`, {
+                                                credentials: 'include',
+                                            });
                                             if (res.ok) {
                                                 const detailed = await res.json();
                                                 setSelectedQSO(detailed);

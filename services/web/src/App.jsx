@@ -4,6 +4,7 @@ import Dashboard from './components/Dashboard';
 import QSOList from './components/QSOList';
 import { Terminal, Database } from 'lucide-react';
 import { useWebSocket } from './contexts/WebSocketContext';
+import { useAuth } from './contexts/AuthContext.jsx';
 import './App.css';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -11,6 +12,8 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 const Layout = ({ children }) => {
   const { isConnected, subscribe } = useWebSocket();
   const [stats, setStats] = useState(null);
+  const location = useLocation();
+  const { logout } = useAuth();
 
   // Receive stats via WebSocket
   useEffect(() => {
@@ -63,6 +66,13 @@ const Layout = ({ children }) => {
                 QSO_LOGS
               </button>
             </Link>
+            <button
+              className="btn"
+              style={{ marginLeft: '10px' }}
+              onClick={logout}
+            >
+              LOGOUT
+            </button>
           </nav>
         </div>
 
@@ -88,7 +98,118 @@ const Layout = ({ children }) => {
   );
 };
 
+const LoginPage = () => {
+  const { login, error, loading } = useAuth();
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!password) return;
+    await login(password);
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#050505',
+        color: '#fff',
+        fontFamily: 'var(--font-mono, monospace)',
+      }}
+    >
+      <div
+        style={{
+          border: '1px solid var(--color-primary)',
+          padding: '30px',
+          width: '100%',
+          maxWidth: '400px',
+          boxShadow: '0 0 20px rgba(0,255,65,0.15)',
+          background: '#020202',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+          <Terminal size={24} color="var(--color-primary)" />
+          <div>
+            <div style={{ fontSize: '1.1em', letterSpacing: '1px' }}>
+              ARIS<span style={{ color: 'var(--color-primary)' }}>_COMMAND</span>
+            </div>
+            <div style={{ fontSize: '0.7em', color: '#777' }}>AUTHORIZED ACCESS ONLY</div>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <label
+            style={{
+              display: 'block',
+              fontSize: '0.8em',
+              marginBottom: '6px',
+              color: '#aaa',
+            }}
+          >
+            ADMIN PASSWORD
+          </label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '8px 10px',
+              marginBottom: '12px',
+              background: '#000',
+              border: '1px solid #333',
+              color: '#fff',
+              fontFamily: 'inherit',
+            }}
+            autoFocus
+          />
+          {error && (
+            <div style={{ color: '#ff5555', fontSize: '0.8em', marginBottom: '10px' }}>
+              {error}
+            </div>
+          )}
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={loading}
+            style={{ width: '100%', marginTop: '5px' }}
+          >
+            {loading ? 'AUTHENTICATING...' : 'ENTER SYSTEM'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
 function App() {
+  const { isAuthenticated, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#050505',
+          color: '#888',
+          fontFamily: 'var(--font-mono, monospace)',
+        }}
+      >
+        INITIALIZING_AUTH_SUBSYSTEM...
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
   return (
     <Router>
       <Layout>

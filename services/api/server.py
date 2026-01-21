@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.middleware.sessions import SessionMiddleware
 import asyncio
 import redis
 import json
@@ -30,6 +31,7 @@ import wave
 import struct
 import re
 from collections import defaultdict
+import hmac
 
 sys.path.insert(0, '/app')
 from shared.models import (
@@ -77,6 +79,16 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# Session / auth configuration (env-driven only)
+API_KEY = os.getenv('API_KEY', '')
+ADMIN_PASSWORD = os.getenv("ARIS_ADMIN_PASSWORD", "") or ""
+SESSION_SECRET = os.getenv("ARIS_SECRET_KEY")
+
+if not SESSION_SECRET:
+    # Fallback for development if not explicitly set
+    SESSION_SECRET = "dev-change-me-session-secret"
+    logger.warning("ARIS_SECRET_KEY is not set. Using an insecure default key; set ARIS_SECRET_KEY in production.")
+
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
@@ -86,8 +98,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Key authentication (optional)
-API_KEY = os.getenv('API_KEY', '')
+# Signed cookie sessions for web UI auth
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    session_cookie="aris_session",
+    same_site="lax",
+    https_only=False,  # Set to True if you terminate TLS in front of ARIS
+)
+
+# API Key authentication (optional, also used by auth dependency)
 security = HTTPBearer(auto_error=False)
 
 # Rate limiting
@@ -119,22 +139,121 @@ def check_rate_limit(request: Request):
     rate_limit_store[client_ip].append(now)
     return True
 
-def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify API key if configured"""
-    if not API_KEY:
-        return True  # No API key required
-    
-    if not credentials:
-        raise HTTPException(status_code=401, detail="API key required")
-    
-    if credentials.credentials != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+def is_session_admin(request: Request) -> bool:
+    """Check if current request has an authenticated admin session."""
+    try:
+        session = request.session
+    except Exception:
+        session = {}
+    return bool(session.get("is_admin"))
+
+
+def require_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """
+    Unified auth dependency for all protected endpoints.
+
+    Allows access if EITHER:
+      - A valid API_KEY Bearer token is provided (for automation/CLI), OR
+      - There is an active signed admin session (for the web UI).
+    """
+    # Always enforce rate limiting when auth is required
+    check_rate_limit(request)
+
+    # 1) API key path for non-browser clients
+    if API_KEY and credentials and credentials.credentials == API_KEY:
+        return True
+
+    # 2) Session-based admin auth for the web UI
+    if ADMIN_PASSWORD:
+        if is_session_admin(request):
+            return True
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # 3) If no ARIS_ADMIN_PASSWORD is configured, fail closed by default
+    logger.error("ARIS_ADMIN_PASSWORD is not set. Refusing access to protected endpoint.")
+    raise HTTPException(
+        status_code=500,
+        detail="Server authentication is not configured. Set ARIS_ADMIN_PASSWORD.",
+    )
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+class AuthStatus(BaseModel):
+    authenticated: bool
+
+
+@app.post("/api/login")
+async def login(payload: LoginRequest, request: Request):
+    """
+    Login endpoint for the web UI.
+    Establishes a signed admin session using a shared password.
+    Password is configured via ARIS_ADMIN_PASSWORD environment variable.
+    """
+    if not ADMIN_PASSWORD:
+        logger.error("Login attempted but ARIS_ADMIN_PASSWORD is not set.")
+        raise HTTPException(
+            status_code=500,
+            detail="Server authentication is not configured. Set ARIS_ADMIN_PASSWORD.",
+        )
+
+    # Constant-time comparison to avoid timing attacks
+    if not hmac.compare_digest(payload.password, ADMIN_PASSWORD):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Reset and set admin session
+    request.session.clear()
+    request.session["is_admin"] = True
+    request.session["login_time"] = time.time()
+
+    return {"status": "success"}
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    """Clear the current session."""
+    request.session.clear()
+    return {"status": "success"}
+
+
+@app.get("/api/me", response_model=AuthStatus)
+async def get_me(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """
+    Return current authentication status.
+
+    - API key bearer tokens are treated as authenticated (for scripts).
+    - Web UI checks for a signed admin session.
+    """
+    if API_KEY and credentials and credentials.credentials == API_KEY:
+        return AuthStatus(authenticated=True)
+
+    return AuthStatus(authenticated=is_session_admin(request))
+
+
+@app.get("/api/health")
+async def health():
+    """Unauthenticated health endpoint for container and external monitoring."""
+    return {"status": "ok"}
 
 # --- Helper for Slot Status (defined after SessionLocal initialization) ---
 
 # --- WebSocket Endpoint ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Enforce session-based auth for WebSocket connections (web UI)
+    session = getattr(websocket, "session", websocket.scope.get("session", {}))
+    if not session or not session.get("is_admin"):
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(websocket)
     try:
         logger.info(f"WS Accepted: {websocket.client}")
@@ -535,7 +654,7 @@ class TranscriptResponse(BaseModel):
 
 # ... existing code ...
 
-@app.delete("/api/transcripts", dependencies=[Depends(check_rate_limit)])
+@app.delete("/api/transcripts", dependencies=[Depends(require_admin)])
 async def clear_transcripts():
     """Clear all transcripts from Database and Redis"""
     session = SessionLocal()
@@ -560,7 +679,7 @@ async def clear_transcripts():
     finally:
         session.close()
 
-@app.delete("/api/transcripts/{transcript_id}", dependencies=[Depends(check_rate_limit)])
+@app.delete("/api/transcripts/{transcript_id}", dependencies=[Depends(require_admin)])
 async def delete_transcript(transcript_id: int):
     """Delete a specific transcript"""
     session = SessionLocal()
@@ -582,7 +701,7 @@ async def delete_transcript(transcript_id: int):
         session.close()
 
 
-@app.get("/api/transcripts", response_model=List[TranscriptResponse])
+@app.get("/api/transcripts", response_model=List[TranscriptResponse], dependencies=[Depends(require_admin)])
 async def get_transcripts(
     limit: int = Query(default=50, le=500),
     frequency: Optional[int] = None
@@ -651,8 +770,7 @@ class SlotConfig(BaseModel):
     password: Optional[str] = None
 
 
-
-@app.get("/")
+@app.get("/", dependencies=[Depends(require_admin)])
 async def root():
     """Simple web UI"""
     html_content = """
@@ -1103,7 +1221,7 @@ async def root():
     return HTMLResponse(content=html_content)
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=[Depends(require_admin)])
 async def get_stats():
     """Get system statistics"""
     try:
@@ -1149,7 +1267,7 @@ async def get_stats():
         logger.error(f"Error getting stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/slots/{slot_id}/start")
+@app.post("/api/slots/{slot_id}/start", dependencies=[Depends(require_admin)])
 async def start_slot(slot_id: int, config: SlotConfig):
     """Start or Configure a capture slot"""
     session = SessionLocal()
@@ -1197,7 +1315,7 @@ async def start_slot(slot_id: int, config: SlotConfig):
     finally:
         session.close()
 
-@app.post("/api/slots/{slot_id}/stop")
+@app.post("/api/slots/{slot_id}/stop", dependencies=[Depends(require_admin)])
 async def stop_slot(slot_id: int):
     """Stop a capture slot"""
     session = SessionLocal()
@@ -1226,7 +1344,7 @@ async def stop_slot(slot_id: int):
     finally:
         session.close()
 
-@app.get("/api/slots")
+@app.get("/api/slots", dependencies=[Depends(require_admin)])
 async def get_active_slots():
     """Discover active slots via DB config + Live activity"""
     session = SessionLocal()
@@ -1291,7 +1409,7 @@ async def get_active_slots():
         session.close()
 
 # Legacy Control Mapping (Default to Slot 1)
-@app.post("/api/control/start")
+@app.post("/api/control/start", dependencies=[Depends(require_admin)])
 async def control_start():
     # We can't easily map this without config. Assumes "RESUME".
     # For now, do nothing or send a generic start to slot 1?
@@ -1300,12 +1418,12 @@ async def control_start():
     # I'll just return success for UI compatibility for now.
     return {"status": "success", "message": "Legacy start deprecated. Use Slot API."}
 
-@app.post("/api/control/stop")
+@app.post("/api/control/stop", dependencies=[Depends(require_admin)])
 async def control_stop():
     await stop_slot(1)
     return {"status": "success", "message": "Stopped Slot 1"}
 
-@app.post("/api/control/frequency")
+@app.post("/api/control/frequency", dependencies=[Depends(require_admin)])
 async def control_freq(data: dict):
     # Just update freq of slot 1
     # We need current config... difficult.
@@ -1322,7 +1440,7 @@ async def control_freq(data: dict):
 
 
 
-@app.get("/api/callsigns", response_model=List[CallsignResponse])
+@app.get("/api/callsigns", response_model=List[CallsignResponse], dependencies=[Depends(require_admin)])
 async def get_callsigns(
     limit: int = Query(default=50, le=500),
     callsign: Optional[str] = None
@@ -1356,7 +1474,7 @@ async def get_callsigns(
         session.close()
 
 
-@app.post("/api/qsos/{session_id}/regenerate", dependencies=[Depends(check_rate_limit)])
+@app.post("/api/qsos/{session_id}/regenerate", dependencies=[Depends(require_admin)])
 async def regenerate_qso_summary(session_id: str):
     """Regenerate summary for a QSO by sending command to summarizer service"""
     session = SessionLocal()
@@ -1385,7 +1503,7 @@ async def regenerate_qso_summary(session_id: str):
         session.close()
 
 
-@app.get("/api/qsos", response_model=List[QSOResponse])
+@app.get("/api/qsos", response_model=List[QSOResponse], dependencies=[Depends(require_admin)])
 async def get_qsos(
     limit: int = Query(default=20, le=100)
 ):
@@ -1418,7 +1536,7 @@ async def get_qsos(
         session.close()
 
 
-@app.get("/api/qsos/{session_id}", response_model=QSODetailResponse)
+@app.get("/api/qsos/{session_id}", response_model=QSODetailResponse, dependencies=[Depends(require_admin)])
 async def get_qso_detail(session_id: str):
     """Get full details for a specific QSO including transcripts"""
     session = SessionLocal()
@@ -1474,7 +1592,7 @@ async def get_qso_detail(session_id: str):
         session.close()
 
 
-@app.delete("/api/qsos/{session_id}")
+@app.delete("/api/qsos/{session_id}", dependencies=[Depends(require_admin)])
 async def delete_qso(session_id: str):
     """Delete a QSO and its associated transcripts"""
     session = SessionLocal()
@@ -1507,7 +1625,7 @@ async def delete_qso(session_id: str):
         session.close()
 
 
-@app.get("/api/search/callsign/{callsign}")
+@app.get("/api/search/callsign/{callsign}", dependencies=[Depends(require_admin)])
 async def search_by_callsign(callsign: str):
     """Search all data for a specific callsign"""
     callsign = callsign.upper()
@@ -1566,7 +1684,7 @@ def validate_mode(mode: str) -> str:
         )
     return mode_upper
 
-@app.post("/api/control/frequency", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/frequency", dependencies=[Depends(require_admin)])
 async def set_frequency(request: FrequencyRequest, req: Request = None):
     """
     Change the receiver frequency
@@ -1599,7 +1717,7 @@ async def set_frequency(request: FrequencyRequest, req: Request = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/control/mode", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/mode", dependencies=[Depends(require_admin)])
 async def set_mode(request: ModeRequest, req: Request = None):
     """
     Change the demodulation mode
@@ -1630,7 +1748,7 @@ async def set_mode(request: ModeRequest, req: Request = None):
         logger.error(f"Error sending mode change command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/control/filter", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/filter", dependencies=[Depends(require_admin)])
 async def set_filter(request: FilterRequest, req: Request = None):
     """
     Change filter bandwidth
@@ -1668,7 +1786,7 @@ async def set_filter(request: FilterRequest, req: Request = None):
         logger.error(f"Error sending filter change command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/control/agc", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/agc", dependencies=[Depends(require_admin)])
 async def set_agc(request: AGCRequest, req: Request = None):
     """
     Change AGC settings
@@ -1706,7 +1824,7 @@ async def set_agc(request: AGCRequest, req: Request = None):
         logger.error(f"Error sending AGC change command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/control/noise-blanker", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/noise-blanker", dependencies=[Depends(require_admin)])
 async def set_noise_blanker(request: NoiseBlankerRequest, req: Request = None):
     """
     Enable/disable noise blanker
@@ -1732,7 +1850,7 @@ async def set_noise_blanker(request: NoiseBlankerRequest, req: Request = None):
         logger.error(f"Error sending noise blanker command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/control/summarize", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/summarize", dependencies=[Depends(require_admin)])
 async def trigger_summarize(req: Request = None):
     """
     Manually trigger QSO summarization for pending transcripts
@@ -1757,7 +1875,7 @@ async def trigger_summarize(req: Request = None):
         logger.error(f"Error sending summarization trigger command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/control/start", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/start", dependencies=[Depends(require_admin)])
 async def start_capture(req: Request = None):
     """
     Start/resume audio capture and processing
@@ -1779,7 +1897,7 @@ async def start_capture(req: Request = None):
         logger.error(f"Error sending start command: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/control/stop", dependencies=[Depends(check_rate_limit), Depends(verify_api_key)])
+@app.post("/api/control/stop", dependencies=[Depends(require_admin)])
 async def stop_capture(req: Request = None):
     """
     Stop/pause audio capture and processing
@@ -1833,7 +1951,7 @@ async def stop_capture(req: Request = None):
 #         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/audio/chunk/{chunk_id}")
+@app.get("/api/audio/chunk/{chunk_id}", dependencies=[Depends(require_admin)])
 async def get_audio_chunk(chunk_id: str):
     """
     Download an audio chunk as WAV file for playback/verification
@@ -1882,7 +2000,7 @@ async def get_audio_chunk(chunk_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/audio/latest")
+@app.get("/api/audio/latest", dependencies=[Depends(require_admin)])
 async def get_latest_audio():
     """Get the most recent audio chunks (approx 8s) as WAV file"""
     try:
@@ -1948,7 +2066,7 @@ async def get_latest_audio():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/monitor")
+@app.get("/api/monitor", dependencies=[Depends(require_admin)])
 async def monitor_dashboard():
     """Real-time monitoring dashboard"""
     html_content = """

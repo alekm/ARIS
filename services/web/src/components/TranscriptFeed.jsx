@@ -15,7 +15,8 @@ const TranscriptFeed = ({ transcripts, onDelete }) => {
 
         try {
             const res = await fetch(`${API_BASE}/api/transcripts/${transcriptId}`, { 
-                method: 'DELETE' 
+                method: 'DELETE',
+                credentials: 'include',
             });
             if (res.ok) {
                 // Call parent's onDelete callback to update the list
