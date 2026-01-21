@@ -80,7 +80,11 @@ docker compose up -d
 4. Access the web UI:
 ```bash
 open http://localhost:3000
-# API is available at http://localhost:8000
+# API is accessible via internal Docker network only by default
+# To expose API for troubleshooting, uncomment ports in docker-compose.yml:
+#   ports:
+#     - 8000:8000
+# Then restart: docker compose up -d api
 ```
 
 5. Configure authentication:
@@ -164,8 +168,9 @@ See `.env.example` for all available options and defaults.
 
 **Alternative: Use the API**
 ```bash
-# Start a slot via API
-curl -X POST http://localhost:8000/api/slots/1/start \
+# API is only accessible via Docker network by default
+# Option 1: Access from inside Docker network (e.g., from another container)
+curl -X POST http://aris-api:8000/api/slots/1/start \
   -H "Content-Type: application/json" \
   -d '{
     "mode": "kiwi",
@@ -175,6 +180,13 @@ curl -X POST http://localhost:8000/api/slots/1/start \
     "demod_mode": "USB",
     "password": ""
   }'
+
+# Option 2: Access via docker exec (when port not exposed)
+docker exec aris-api curl -X POST http://localhost:8000/api/slots/1/start \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "kiwi", "host": "your.kiwi.address", "port": 8073, "frequency_hz": 7200000, "demod_mode": "USB", "password": ""}'
+
+# Option 3: Temporarily expose port for troubleshooting (uncomment ports in docker-compose.yml)
 ```
 
 **Backward Compatibility: Environment Variables**
@@ -195,7 +207,7 @@ KiwiSDR slots are configured via the Web UI or API endpoints. The `services/audi
 
 To configure slots:
 - **Web UI**: Use the Dashboard at `http://localhost:3000`
-- **API**: Use `POST /api/slots/{slot_id}/start` endpoint (API at `http://localhost:8000`)
+- **API**: Use `POST /api/slots/{slot_id}/start` endpoint (API accessible via Docker network `aris-api:8000` or temporarily expose port for troubleshooting)
 
 ### STT Settings (`.env`)
 
