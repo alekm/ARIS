@@ -5,7 +5,7 @@
 *.fixed
 *.orig
 
-# Data
+# Data (keep gitkeep placeholders only)
 data/audio/*
 data/transcripts/*
 data/db/*
@@ -13,7 +13,7 @@ data/redis/*
 data/summaries/*
 !data/**/.gitkeep
 
-# Python
+# Python artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -26,20 +26,21 @@ build/
 # Logs
 *.log
 
-# IDE
+# IDE / editor
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
+# OS cruft
 .DS_Store
 Thumbs.db
 
-# Models
+# Model files and local caches
 *.bin
 *.pt
 *.onnx
 data/models/
+
+# Local assistant metadata (not needed in git)
 CLAUDE.md
-SECURITY_REVIEW.md

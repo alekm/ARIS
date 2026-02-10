@@ -1522,6 +1522,33 @@ async def get_callsigns(
         session.close()
 
 
+@app.delete("/api/callsigns", dependencies=[Depends(require_admin)])
+async def clear_callsigns():
+    """Clear all callsign detections from Database and Redis"""
+    session = SessionLocal()
+    try:
+        # Clear DB
+        count = session.query(CallsignModel).count()
+        session.query(CallsignModel).delete()
+        session.commit()
+        
+        # Clear Redis stream too (optional but good for consistency)
+        # Use xtrim instead of delete to preserve consumer groups
+        try:
+            redis_client.xtrim(STREAM_CALLSIGNS, maxlen=0)
+        except Exception:
+            pass # Ignore if stream doesn't exist
+        
+        logger.info(f"Cleared {count} callsign detections from DB and Redis")
+        return {"status": "success", "message": f"All callsign detections cleared ({count} deleted)"}
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error clearing callsigns: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
 @app.post("/api/qsos/{session_id}/regenerate", dependencies=[Depends(require_admin)])
 async def regenerate_qso_summary(session_id: str):
     """Regenerate summary for a QSO by sending command to summarizer service"""
@@ -1635,6 +1662,33 @@ async def get_qso_detail(session_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting QSO detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.delete("/api/qsos", dependencies=[Depends(require_admin)])
+async def clear_qsos():
+    """Clear all QSO summaries from Database and Redis"""
+    session = SessionLocal()
+    try:
+        # Clear DB
+        count = session.query(QSOModel).count()
+        session.query(QSOModel).delete()
+        session.commit()
+        
+        # Clear Redis stream too (optional but good for consistency)
+        # Use xtrim instead of delete to preserve consumer groups
+        try:
+            redis_client.xtrim(STREAM_QSOS, maxlen=0)
+        except Exception:
+            pass # Ignore if stream doesn't exist
+        
+        logger.info(f"Cleared {count} QSO summaries from DB and Redis")
+        return {"status": "success", "message": f"All QSO summaries cleared ({count} deleted)"}
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error clearing QSOs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()

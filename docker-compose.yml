@@ -136,8 +136,8 @@ services:
       - ./data/db:/data/db
     # API port not exposed by default for security
     # Uncomment below to expose API for troubleshooting:
-    # ports:
-    #   - 8000:8000
+    ports:
+      - 8000:8000
     environment:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
